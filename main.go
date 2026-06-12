@@ -64,7 +64,7 @@ func main() {
 		log.Printf("generated app secret and saved it to %s", filepath.Join(cfg.DataDir, "app_secret.txt"))
 	}
 
-	store, err := LoadStore(filepath.Join(cfg.DataDir, "store.json"))
+	store, err := LoadStore(filepath.Join(cfg.DataDir, "store.db"))
 	if err != nil {
 		log.Fatalf("load store: %v", err)
 	}

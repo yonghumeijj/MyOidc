@@ -39,6 +39,14 @@ If `OIDC_CLIENT_SECRET` is not set, the service generates one and stores it in:
 data/oidc_client_secret.txt
 ```
 
+Runtime data is stored in SQLite:
+
+```text
+data/store.db
+```
+
+If an older `data/store.json` exists and `store.db` is empty, the service imports it on startup.
+
 ## Docker
 
 ```bash
