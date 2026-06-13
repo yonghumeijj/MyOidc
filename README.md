@@ -135,6 +135,9 @@ If OpenAI reports `invalid_client`, check:
 - OpenAI's Client ID and Client Secret must exactly match the selected tenant in `/admin`.
 - If you changed OpenAI Team/workspace, update the tenant's allowed redirect URI to the new OpenAI callback URL.
 
+ID tokens include the OpenAI-required `sub`, `email`, `given_name`, and `family_name` claims.
+`given_name` is derived from the email local part and `family_name` is an empty string.
+
 ## Multi-Tenant Setup
 
 Open `/admin` to add or edit tenants. In the common single-issuer setup, keep one tenant:

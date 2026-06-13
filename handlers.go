@@ -300,6 +300,7 @@ func (a *App) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
+	givenName, familyName := profileNames(user.Email)
 	claims := map[string]any{
 		"iss":                tenant.IssuerURL,
 		"sub":                user.Sub,
@@ -310,6 +311,8 @@ func (a *App) handleToken(w http.ResponseWriter, r *http.Request) {
 		"email":              user.Email,
 		"email_verified":     true,
 		"name":               user.Email,
+		"given_name":         givenName,
+		"family_name":        familyName,
 		"preferred_username": user.Email,
 	}
 	if authCode.Nonce != "" {
@@ -346,11 +349,14 @@ func (a *App) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid_token"})
 		return
 	}
+	givenName, familyName := profileNames(user.Email)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sub":                user.Sub,
 		"email":              user.Email,
 		"email_verified":     true,
 		"name":               user.Email,
+		"given_name":         givenName,
+		"family_name":        familyName,
 		"preferred_username": user.Email,
 	})
 }
@@ -371,7 +377,7 @@ func (a *App) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "email", "profile"},
-		"claims_supported":                      []string{"sub", "email", "email_verified", "name", "preferred_username"},
+		"claims_supported":                      []string{"sub", "email", "email_verified", "name", "given_name", "family_name", "preferred_username"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post"},
 	})
 }
@@ -462,6 +468,19 @@ func scopeContains(scope string, want string) bool {
 		}
 	}
 	return false
+}
+
+func profileNames(email string) (string, string) {
+	local := profileGivenName(email)
+	return local, ""
+}
+
+func profileGivenName(email string) string {
+	email = normalizeEmail(email)
+	if at := strings.Index(email, "@"); at > 0 {
+		return email[:at]
+	}
+	return email
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

@@ -62,3 +62,13 @@ func TestShouldAdoptPublicHTTPToHTTPSIssuer(t *testing.T) {
 		t.Fatalf("should not adopt matching https issuer")
 	}
 }
+
+func TestProfileNamesFromEmail(t *testing.T) {
+	given, family := profileNames("First.Last@example.com")
+	if given != "first.last" {
+		t.Fatalf("given = %q, want email local part", given)
+	}
+	if family != "" {
+		t.Fatalf("family = %q, want empty string", family)
+	}
+}
