@@ -24,9 +24,11 @@ type AdminPageData struct {
 	AdminUser string
 	Tenants   []Tenant
 	Tenant    Tenant
+	Origin    string
 	Generated []GeneratedKey
 	Keys      []KeyView
 	Error     string
+	Notice    string
 }
 
 type LoginPageData struct {
@@ -147,7 +149,37 @@ func (a *App) handleAdminTenants(w http.ResponseWriter, r *http.Request) {
 		a.renderAdmin(w, r, nil, err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenant.ID), http.StatusFound)
+	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenant.ID)+"&notice=tenant_saved", http.StatusFound)
+}
+
+func (a *App) handleAdminPassword(w http.ResponseWriter, r *http.Request) {
+	if !a.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderAdmin(w, r, nil, "invalid form")
+		return
+	}
+	password := strings.TrimSpace(r.FormValue("new_password"))
+	confirm := strings.TrimSpace(r.FormValue("confirm_password"))
+	if len(password) < 12 {
+		a.renderAdmin(w, r, nil, "admin password must be at least 12 characters")
+		return
+	}
+	if password != confirm {
+		a.renderAdmin(w, r, nil, "admin password confirmation does not match")
+		return
+	}
+	if err := saveTextSecret(a.cfg.AdminPassPath, password); err != nil {
+		a.renderAdmin(w, r, nil, "save admin password failed: "+err.Error())
+		return
+	}
+	a.setAdminPassword(password)
+	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(r.FormValue("tenant_id"))+"&notice=password_saved", http.StatusFound)
 }
 
 func (a *App) handleAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -434,14 +466,27 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	user, pass, ok := r.BasicAuth()
+	adminPassword := a.adminPassword()
 	if !ok ||
 		!constantTimeStringEqual(user, a.cfg.AdminUser) ||
-		!constantTimeStringEqual(pass, a.cfg.AdminPassword) {
+		!constantTimeStringEqual(pass, adminPassword) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="gooidc admin"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
 	}
 	return true
+}
+
+func (a *App) adminPassword() string {
+	a.adminMu.RLock()
+	defer a.adminMu.RUnlock()
+	return a.cfg.AdminPassword
+}
+
+func (a *App) setAdminPassword(password string) {
+	a.adminMu.Lock()
+	defer a.adminMu.Unlock()
+	a.cfg.AdminPassword = password
 }
 
 func (a *App) tenantForRequest(w http.ResponseWriter, r *http.Request) (Tenant, bool) {
@@ -472,6 +517,7 @@ func (a *App) adminTenantFromRequest(r *http.Request) (Tenant, error) {
 }
 
 func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, generated []GeneratedKey, errText string) {
+	noticeText := adminNotice(r)
 	tenants, err := a.store.Tenants()
 	if err != nil {
 		http.Error(w, "load tenants failed", http.StatusInternalServerError)
@@ -487,17 +533,104 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, generated []Ge
 			}
 		}
 	}
+	if tenant.ID != "" {
+		if updated, notice, err := a.maybeAdoptCurrentIssuer(r, tenant); err != nil {
+			if errText == "" {
+				errText = err.Error()
+			}
+		} else if notice != "" {
+			tenant = updated
+			if noticeText == "" {
+				noticeText = notice
+			}
+			tenants, _ = a.store.Tenants()
+		}
+	}
 	data := AdminPageData{
 		AdminUser: a.cfg.AdminUser,
 		Tenants:   tenants,
 		Tenant:    tenant,
+		Origin:    currentOrigin(r),
 		Generated: generated,
 		Keys:      a.store.KeyViews(tenant.ID),
 		Error:     errText,
+		Notice:    noticeText,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := pages.ExecuteTemplate(w, "admin", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (a *App) maybeAdoptCurrentIssuer(r *http.Request, tenant Tenant) (Tenant, string, error) {
+	origin := currentOrigin(r)
+	if origin == "" || isLocalOrigin(origin) || !isLocalOrigin(tenant.IssuerURL) {
+		return tenant, "", nil
+	}
+	updated, err := a.store.SaveTenant(TenantInput{
+		ID:             tenant.ID,
+		IssuerURL:      origin,
+		AllowedDomains: tenant.AllowedDomains,
+		ClientID:       tenant.ClientID,
+		ClientSecret:   tenant.ClientSecret,
+		RedirectURIs:   tenant.RedirectURIs,
+	})
+	if err != nil {
+		return tenant, "", err
+	}
+	return updated, "Default issuer URL updated from localhost to " + origin + ".", nil
+}
+
+func currentOrigin(r *http.Request) string {
+	host := firstHeaderValue(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	host = normalizeHost(host)
+	if host == "" {
+		return ""
+	}
+	proto := strings.ToLower(firstHeaderValue(r.Header.Get("X-Forwarded-Proto")))
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	if proto != "https" && proto != "http" {
+		proto = "https"
+	}
+	return proto + "://" + host
+}
+
+func firstHeaderValue(value string) string {
+	if idx := strings.Index(value, ","); idx >= 0 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
+}
+
+func isLocalOrigin(origin string) bool {
+	u, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil {
+		return false
+	}
+	host := normalizeHost(u.Host)
+	return host == "localhost" ||
+		strings.HasPrefix(host, "localhost:") ||
+		host == "127.0.0.1" ||
+		strings.HasPrefix(host, "127.0.0.1:")
+}
+
+func adminNotice(r *http.Request) string {
+	switch r.URL.Query().Get("notice") {
+	case "tenant_saved":
+		return "Tenant settings saved."
+	case "password_saved":
+		return "Admin password updated."
+	default:
+		return ""
 	}
 }
 

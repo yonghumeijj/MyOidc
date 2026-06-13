@@ -141,6 +141,14 @@ func loadOrCreateTextSecret(path string, envValue string, bytes int) (string, bo
 	return secret, true
 }
 
+func saveTextSecret(path string, value string) error {
+	value = strings.TrimSpace(value)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(value+"\n"), 0o600)
+}
+
 func (a *App) setSessionCookie(w http.ResponseWriter, tenant Tenant, email string) {
 	expires := time.Now().UTC().Add(time.Duration(a.cfg.SessionHours) * time.Hour)
 	payload := tenant.ID + "|" + normalizeEmail(email) + "|" + strconv.FormatInt(expires.Unix(), 10)

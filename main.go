@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type Config struct {
@@ -14,6 +15,7 @@ type Config struct {
 	DataDir       string
 	AdminUser     string
 	AdminPassword string
+	AdminPassPath string
 	SessionHours  int
 	SeedTenant    TenantInput
 }
@@ -23,6 +25,7 @@ type App struct {
 	store        *Store
 	signer       *Signer
 	cookieSecret []byte
+	adminMu      sync.RWMutex
 }
 
 func main() {
@@ -33,13 +36,14 @@ func main() {
 	}
 
 	var generated bool
+	cfg.AdminPassPath = filepath.Join(cfg.DataDir, "admin_password.txt")
 	cfg.AdminPassword, generated = loadOrCreateTextSecret(
-		filepath.Join(cfg.DataDir, "admin_password.txt"),
+		cfg.AdminPassPath,
 		os.Getenv("ADMIN_PASSWORD"),
 		32,
 	)
 	if generated {
-		log.Printf("generated admin password and saved it to %s", filepath.Join(cfg.DataDir, "admin_password.txt"))
+		log.Printf("generated admin password and saved it to %s", cfg.AdminPassPath)
 	}
 
 	cfg.SeedTenant.ClientSecret, generated = loadOrCreateTextSecret(
@@ -92,6 +96,7 @@ func main() {
 	mux.HandleFunc("/admin/keys", app.handleAdminKeys)
 	mux.HandleFunc("/admin/revoke", app.handleAdminRevoke)
 	mux.HandleFunc("/admin/tenants", app.handleAdminTenants)
+	mux.HandleFunc("/admin/password", app.handleAdminPassword)
 	mux.HandleFunc("/authorize", app.handleAuthorize)
 	mux.HandleFunc("/login", app.handleLogin)
 	mux.HandleFunc("/token", app.handleToken)

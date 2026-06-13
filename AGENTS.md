@@ -138,6 +138,9 @@ tenants and their allowed email domain lists are managed in `/admin`. Multiple p
 can point to the same container as long as the reverse proxy preserves the original `Host` header,
 but the common setup is one issuer with multiple allowed email domains.
 
+If the first tenant is still the default `http://localhost:8080`, the admin page may adopt the
+current public admin origin, such as `https://oidc.ai90.net`, as that tenant's issuer URL.
+
 ## Docker
 
 Build locally:
@@ -227,4 +230,6 @@ When changing this project:
 - Preserve one-time migration compatibility for legacy `store.json` where practical.
 - Keep tenant-scoped state tenant-scoped; do not let one tenant's unbound key, auth code,
   access token, or session authenticate against another tenant.
+- Keep the admin page server-rendered but usable for routine operations, including tenant
+  editing, one-time key generation, and admin password changes.
 - Update `README.md` when changing environment variables or deployment behavior.

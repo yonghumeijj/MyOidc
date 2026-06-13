@@ -51,6 +51,10 @@ If an older `data/store.json` exists and `store.db` is empty, the service import
 `OIDC_REDIRECT_URIS` seed the first tenant when the database has no tenants. After that,
 manage tenants in `/admin`.
 
+If you start without `ISSUER_URL`, the first admin visit from a real host such as
+`https://oidc.ai90.net/admin` updates the default tenant from `http://localhost:8080`
+to that public origin.
+
 ## Docker
 
 ```bash
@@ -159,6 +163,10 @@ proxy_set_header Host $host;
 
 Generate one-time keys from the selected tenant in `/admin`. Unbound keys are scoped to
 that tenant only and can be used with any allowed email domain in that tenant.
+
+The admin password can also be changed in `/admin`. When `ADMIN_PASSWORD` is set as an
+environment variable, that value will be used again after container restart; omit it if you
+want the password stored in `/data/admin_password.txt` to be the source of truth.
 
 ## Security Notes
 

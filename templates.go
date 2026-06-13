@@ -5,31 +5,257 @@ import "html/template"
 var pages = template.Must(template.New("pages").Parse(adminHTML + loginHTML))
 
 const pageCSS = `
-body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17202a; background: #f6f7f9; }
-main { max-width: 1100px; margin: 32px auto; padding: 0 20px 48px; }
-h1 { font-size: 28px; margin: 0 0 8px; }
-h2 { font-size: 18px; margin: 0 0 16px; }
-p { color: #53616f; line-height: 1.5; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
-.panel { background: #fff; border: 1px solid #dfe4ea; border-radius: 8px; padding: 18px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
-.row { display: grid; grid-template-columns: 170px 1fr; gap: 12px; padding: 7px 0; border-bottom: 1px solid #edf0f3; }
-.row:last-child { border-bottom: 0; }
-.label { color: #64707d; }
-code, textarea, input, select, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-input, textarea, select { width: 100%; box-sizing: border-box; border: 1px solid #cfd6de; border-radius: 6px; padding: 9px 10px; background: #fff; color: #17202a; }
-textarea { min-height: 130px; resize: vertical; }
-pre { white-space: pre-wrap; margin: 0; }
-button { border: 0; border-radius: 6px; padding: 9px 13px; background: #1f6feb; color: #fff; cursor: pointer; font-weight: 600; }
+:root {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --ink: #17202a;
+  --muted: #667381;
+  --line: #dde3ea;
+  --soft: #eef3f8;
+  --brand: #1f6feb;
+  --brand-dark: #1558c0;
+  --danger: #c62835;
+  --success-bg: #edfdf4;
+  --success-line: #9ae6b4;
+  --success-ink: #116329;
+  --error-bg: #fff1f1;
+  --error-line: #ffb3b3;
+  --error-ink: #a40e26;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+button, input, textarea, select { font: inherit; }
+code, textarea, input.mono, .token, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+a { color: inherit; }
+.admin-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+}
+.sidebar {
+  background: #111827;
+  color: #f8fafc;
+  padding: 22px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255,255,255,.12);
+}
+.brand strong { font-size: 18px; letter-spacing: .2px; }
+.brand span, .side-label { color: #a8b3c3; font-size: 12px; }
+.tenant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tenant-link {
+  display: block;
+  text-decoration: none;
+  padding: 10px 11px;
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 8px;
+  color: #dbe5f1;
+  overflow-wrap: anywhere;
+}
+.tenant-link.active {
+  background: #233046;
+  border-color: #4a90e2;
+  color: #fff;
+}
+.sidebar .foot {
+  margin-top: auto;
+  color: #a8b3c3;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.workspace {
+  min-width: 0;
+  padding: 26px;
+}
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  margin-bottom: 20px;
+}
+h1 { font-size: 25px; margin: 0 0 5px; }
+h2 { font-size: 17px; margin: 0; }
+h3 { font-size: 14px; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+p { color: var(--muted); line-height: 1.5; margin: 0; }
+.pill {
+  background: #e8f0ff;
+  color: #174ea6;
+  border: 1px solid #c7d7ff;
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 16px;
+}
+.span-4 { grid-column: span 4; }
+.span-5 { grid-column: span 5; }
+.span-6 { grid-column: span 6; }
+.span-7 { grid-column: span 7; }
+.span-8 { grid-column: span 8; }
+.span-12 { grid-column: span 12; }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(16,24,40,.04);
+  min-width: 0;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.panel-body { padding: 18px; }
+.stack { display: flex; flex-direction: column; gap: 14px; }
+.summary {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  border-top: 1px solid var(--line);
+}
+.summary:first-child { border-top: 0; }
+.summary dt, .summary dd {
+  margin: 0;
+  padding: 10px 0;
+}
+.summary dt { color: var(--muted); }
+.summary dd { min-width: 0; overflow-wrap: anywhere; }
+.token, pre {
+  display: block;
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid #cfd8e3;
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #111827;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+label {
+  display: block;
+  color: #405062;
+  font-weight: 650;
+  font-size: 13px;
+  margin-bottom: 7px;
+}
+input, textarea, select {
+  width: 100%;
+  border: 1px solid #cfd8e3;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--ink);
+  padding: 10px 11px;
+}
+textarea { min-height: 112px; resize: vertical; }
+input:focus, textarea:focus, select:focus {
+  outline: 2px solid rgba(31,111,235,.20);
+  border-color: var(--brand);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.full { grid-column: 1 / -1; }
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+button {
+  border: 0;
+  border-radius: 7px;
+  padding: 10px 14px;
+  background: var(--brand);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+}
+button:hover { background: var(--brand-dark); }
 button.secondary { background: #59636e; }
-button.danger { background: #d1242f; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { padding: 9px 8px; border-bottom: 1px solid #edf0f3; text-align: left; vertical-align: top; }
-th { color: #53616f; font-weight: 700; }
-.error { background: #fff1f1; border: 1px solid #ffb3b3; color: #a40e26; padding: 10px 12px; border-radius: 6px; margin: 0 0 16px; }
-.success { background: #f0fff4; border: 1px solid #a7e8ba; color: #116329; padding: 12px; border-radius: 6px; margin: 0 0 16px; }
-.muted { color: #6b7682; font-size: 13px; }
-.actions { display: flex; gap: 8px; align-items: center; }
-.login { max-width: 430px; }
+button.danger { background: var(--danger); }
+.muted { color: var(--muted); font-size: 13px; }
+.notice, .error {
+  border-radius: 8px;
+  padding: 11px 13px;
+  margin-bottom: 16px;
+}
+.notice { background: var(--success-bg); border: 1px solid var(--success-line); color: var(--success-ink); }
+.error { background: var(--error-bg); border: 1px solid var(--error-line); color: var(--error-ink); }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+th, td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+th { color: var(--muted); font-weight: 700; }
+td { overflow-wrap: anywhere; }
+.status {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: #344054;
+  font-size: 12px;
+}
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.login-card {
+  width: min(460px, 100%);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 22px;
+}
+@media (max-width: 980px) {
+  .admin-shell { grid-template-columns: 1fr; }
+  .sidebar { position: static; }
+  .workspace { padding: 18px; }
+  .span-4, .span-5, .span-6, .span-7, .span-8, .span-12 { grid-column: span 12; }
+}
+@media (max-width: 640px) {
+  .topbar { flex-direction: column; }
+  .form-grid { grid-template-columns: 1fr; }
+  .summary { grid-template-columns: 1fr; gap: 0; }
+  .summary dt { padding-bottom: 0; }
+}
 `
 
 const adminHTML = `
@@ -43,169 +269,220 @@ const adminHTML = `
   <style>` + pageCSS + `</style>
 </head>
 <body>
-<main>
-  <h1>Go OIDC Admin</h1>
-  <p>Manage OIDC tenants and generate one-time login keys.</p>
+<div class="admin-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <strong>gooidc</strong>
+      <span>OIDC provider</span>
+    </div>
 
-  {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+    <div class="tenant-list">
+      <div class="side-label">Tenants</div>
+      {{range .Tenants}}
+      <a class="tenant-link {{if eq .ID $.Tenant.ID}}active{{end}}" href="/admin?tenant={{.ID}}">{{.IssuerURL}}</a>
+      {{end}}
+    </div>
 
-  {{if .Generated}}
-  <section class="panel">
-    <h2>Generated keys</h2>
-    <div class="success">Copy these now. Plaintext keys are not stored and will not be shown again.</div>
-    <textarea readonly>{{range .Generated}}{{if .BoundEmail}}{{.BoundEmail}},{{end}}{{.Key}}
+    <div class="foot">
+      <div>Admin</div>
+      <strong>{{.AdminUser}}</strong>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <div class="topbar">
+      <div>
+        <h1>OIDC Administration</h1>
+        <p>{{.Tenant.IssuerURL}}</p>
+      </div>
+      <div class="pill">{{.Origin}}</div>
+    </div>
+
+    {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
+    {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+    {{if .Generated}}
+    <section class="panel span-12" style="margin-bottom:16px;">
+      <div class="panel-head"><h2>Generated keys</h2></div>
+      <div class="panel-body stack">
+        <div class="notice">Copy these now. Plaintext keys are not stored.</div>
+        <textarea readonly>{{range .Generated}}{{if .BoundEmail}}{{.BoundEmail}},{{end}}{{.Key}}
 {{end}}</textarea>
-    <table>
-      <thead><tr><th>ID</th><th>Bound email</th><th>Expires</th></tr></thead>
-      <tbody>
-      {{range .Generated}}
-        <tr><td><code>{{.ID}}</code></td><td>{{if .BoundEmail}}{{.BoundEmail}}{{else}}any @domain email{{end}}</td><td>{{.ExpiresText}}</td></tr>
-      {{end}}
-      </tbody>
-    </table>
-  </section>
-  <br>
-  {{end}}
-
-  <div class="grid">
-    <section class="panel">
-      <h2>Current tenant</h2>
-      <form method="get" action="/admin">
-        <p>
-          <label>Tenant</label>
-          <select name="tenant" onchange="this.form.submit()">
-            {{range .Tenants}}
-            <option value="{{.ID}}" {{if eq .ID $.Tenant.ID}}selected{{end}}>{{.IssuerURL}}</option>
-            {{end}}
-          </select>
-        </p>
-      </form>
-      {{if .Tenant.ID}}
-      <div class="row"><div class="label">Issuer</div><div><code>{{.Tenant.IssuerURL}}</code></div></div>
-      <div class="row"><div class="label">Discovery</div><div><code>{{.Tenant.IssuerURL}}/.well-known/openid-configuration</code></div></div>
-      <div class="row"><div class="label">Host</div><div><code>{{.Tenant.Host}}</code></div></div>
-      <div class="row"><div class="label">Allowed domains</div><div><pre>{{.Tenant.AllowedDomains}}</pre></div></div>
-      <div class="row"><div class="label">Client ID</div><div><code>{{.Tenant.ClientID}}</code></div></div>
-      <div class="row"><div class="label">Client Secret</div><div><code>{{.Tenant.ClientSecret}}</code></div></div>
-      <div class="row"><div class="label">Allowed redirects</div><div><pre>{{if .Tenant.RedirectURIs}}{{.Tenant.RedirectURIs}}{{else}}not configured; all redirect_uri values are accepted{{end}}</pre></div></div>
-      {{end}}
+        <table>
+          <thead><tr><th>ID</th><th>Bound email</th><th>Expires</th></tr></thead>
+          <tbody>
+          {{range .Generated}}
+          <tr>
+            <td><code>{{.ID}}</code></td>
+            <td>{{if .BoundEmail}}{{.BoundEmail}}{{else}}Any allowed domain{{end}}</td>
+            <td>{{.ExpiresText}}</td>
+          </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
     </section>
+    {{end}}
 
-    <section class="panel">
-      <h2>Generate keys</h2>
-      <form method="post" action="/admin/keys">
-        <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
-        <p>
-          <label>Count</label>
-          <input name="count" type="number" min="1" max="1000" value="10">
-        </p>
-        <p>
-          <label>Expires after hours</label>
-          <input name="expires_hours" type="number" min="0" value="168">
-          <span class="muted">Use 0 for no expiry. Bound emails below ignore Count.</span>
-        </p>
-        <p>
-          <label>Optional bound emails</label>
-          <textarea name="bound_emails" placeholder="user1@{{.Tenant.PrimaryAllowedDomain}}
+    <div class="grid">
+      <section class="panel span-7">
+        <div class="panel-head"><h2>Tenant overview</h2></div>
+        <div class="panel-body">
+          {{if .Tenant.ID}}
+          <dl>
+            <div class="summary"><dt>Issuer</dt><dd><span class="token">{{.Tenant.IssuerURL}}</span></dd></div>
+            <div class="summary"><dt>Discovery</dt><dd><span class="token">{{.Tenant.IssuerURL}}/.well-known/openid-configuration</span></dd></div>
+            <div class="summary"><dt>Host</dt><dd><code>{{.Tenant.Host}}</code></dd></div>
+            <div class="summary"><dt>Allowed domains</dt><dd><pre>{{.Tenant.AllowedDomains}}</pre></dd></div>
+            <div class="summary"><dt>Client ID</dt><dd><code>{{.Tenant.ClientID}}</code></dd></div>
+            <div class="summary"><dt>Client Secret</dt><dd><span class="token">{{.Tenant.ClientSecret}}</span></dd></div>
+            <div class="summary"><dt>Redirect URIs</dt><dd><pre>{{if .Tenant.RedirectURIs}}{{.Tenant.RedirectURIs}}{{else}}not configured; all redirect_uri values are accepted{{end}}</pre></dd></div>
+          </dl>
+          {{end}}
+        </div>
+      </section>
+
+      <section class="panel span-5">
+        <div class="panel-head"><h2>Generate keys</h2></div>
+        <div class="panel-body">
+          <form method="post" action="/admin/keys" class="stack">
+            <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
+            <div class="form-grid">
+              <div>
+                <label>Count</label>
+                <input name="count" type="number" min="1" max="1000" value="10">
+              </div>
+              <div>
+                <label>Expires after hours</label>
+                <input name="expires_hours" type="number" min="0" value="168">
+              </div>
+              <div class="full">
+                <label>Optional bound emails</label>
+                <textarea name="bound_emails" placeholder="user1@{{.Tenant.PrimaryAllowedDomain}}
 user2@{{.Tenant.PrimaryAllowedDomain}}"></textarea>
-        </p>
-        <button type="submit">Generate</button>
-      </form>
-    </section>
-  </div>
+              </div>
+            </div>
+            <div class="actions"><button type="submit">Generate</button><span class="muted">Use 0 for no expiry.</span></div>
+          </form>
+        </div>
+      </section>
 
-  <br>
-  <div class="grid">
-    <section class="panel">
-      <h2>Edit selected tenant</h2>
-      <form method="post" action="/admin/tenants">
-        <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
-        <p>
-          <label>Issuer URL</label>
-          <input name="issuer_url" value="{{.Tenant.IssuerURL}}" placeholder="https://sso.example.com" required>
-        </p>
-        <p>
-          <label>Allowed email domains</label>
-          <textarea name="allowed_domains" placeholder="example.com
+      <section class="panel span-7">
+        <div class="panel-head"><h2>Edit tenant</h2></div>
+        <div class="panel-body">
+          <form method="post" action="/admin/tenants" class="stack">
+            <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
+            <div class="form-grid">
+              <div class="full">
+                <label>Issuer URL</label>
+                <input name="issuer_url" value="{{.Tenant.IssuerURL}}" placeholder="https://sso.example.com" required>
+              </div>
+              <div class="full">
+                <label>Allowed email domains</label>
+                <textarea name="allowed_domains" placeholder="example.com
 xyz.com
 aaa.com" required>{{.Tenant.AllowedDomains}}</textarea>
-        </p>
-        <p>
-          <label>Client ID</label>
-          <input name="client_id" value="{{.Tenant.ClientID}}" placeholder="openai" required>
-        </p>
-        <p>
-          <label>Client Secret</label>
-          <input name="client_secret" value="{{.Tenant.ClientSecret}}" required>
-        </p>
-        <p>
-          <label>Allowed redirect URIs</label>
-          <textarea name="redirect_uris" placeholder="https://callback.example/from/openai">{{.Tenant.RedirectURIs}}</textarea>
-        </p>
-        <button type="submit">Save tenant</button>
-      </form>
-    </section>
+              </div>
+              <div>
+                <label>Client ID</label>
+                <input name="client_id" value="{{.Tenant.ClientID}}" placeholder="openai" required>
+              </div>
+              <div>
+                <label>Client Secret</label>
+                <input class="mono" name="client_secret" value="{{.Tenant.ClientSecret}}" required>
+              </div>
+              <div class="full">
+                <label>Allowed redirect URIs</label>
+                <textarea name="redirect_uris" placeholder="https://callback.example/from/openai">{{.Tenant.RedirectURIs}}</textarea>
+              </div>
+            </div>
+            <div class="actions"><button type="submit">Save tenant</button></div>
+          </form>
+        </div>
+      </section>
 
-    <section class="panel">
-      <h2>Add tenant</h2>
-      <form method="post" action="/admin/tenants">
-        <p>
-          <label>Issuer URL</label>
-          <input name="issuer_url" placeholder="https://sso.other-example.com" required>
-        </p>
-        <p>
-          <label>Allowed email domains</label>
-          <textarea name="allowed_domains" placeholder="example.com
+      <section class="panel span-5">
+        <div class="panel-head"><h2>Add tenant</h2></div>
+        <div class="panel-body">
+          <form method="post" action="/admin/tenants" class="stack">
+            <div>
+              <label>Issuer URL</label>
+              <input name="issuer_url" placeholder="https://sso.other-example.com" required>
+            </div>
+            <div>
+              <label>Allowed email domains</label>
+              <textarea name="allowed_domains" placeholder="example.com
 xyz.com
 aaa.com" required></textarea>
-        </p>
-        <p>
-          <label>Client ID</label>
-          <input name="client_id" value="openai" required>
-        </p>
-        <p>
-          <label>Client Secret</label>
-          <input name="client_secret" placeholder="leave blank to generate">
-        </p>
-        <p>
-          <label>Allowed redirect URIs</label>
-          <textarea name="redirect_uris" placeholder="https://callback.example/from/openai"></textarea>
-        </p>
-        <button type="submit">Add tenant</button>
-      </form>
-    </section>
-  </div>
+            </div>
+            <div>
+              <label>Client ID</label>
+              <input name="client_id" value="openai" required>
+            </div>
+            <div>
+              <label>Client Secret</label>
+              <input class="mono" name="client_secret" placeholder="leave blank to generate">
+            </div>
+            <div>
+              <label>Allowed redirect URIs</label>
+              <textarea name="redirect_uris" placeholder="https://callback.example/from/openai"></textarea>
+            </div>
+            <div class="actions"><button type="submit">Add tenant</button></div>
+          </form>
+        </div>
+      </section>
 
-  <br>
-  <section class="panel">
-    <h2>Keys for {{.Tenant.IssuerURL}}</h2>
-    <table>
-      <thead><tr><th>ID</th><th>Bound email</th><th>Created</th><th>Expires</th><th>Status</th><th>Action</th></tr></thead>
-      <tbody>
-      {{range .Keys}}
-        <tr>
-          <td><code>{{.ID}}</code></td>
-          <td>{{if .BoundEmail}}{{.BoundEmail}}{{else}}any @domain email{{end}}</td>
-          <td>{{.CreatedAt}}</td>
-          <td>{{.ExpiresAt}}</td>
-          <td>{{.Status}}</td>
-          <td>
-            {{if eq .Status "unused"}}
-            <form method="post" action="/admin/revoke" class="actions">
-              <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
-              <input type="hidden" name="id" value="{{.ID}}">
-              <button class="danger" type="submit">Revoke</button>
-            </form>
+      <section class="panel span-5">
+        <div class="panel-head"><h2>Admin password</h2></div>
+        <div class="panel-body">
+          <form method="post" action="/admin/password" class="stack">
+            <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
+            <div>
+              <label>New password</label>
+              <input name="new_password" type="password" autocomplete="new-password" minlength="12" required>
+            </div>
+            <div>
+              <label>Confirm password</label>
+              <input name="confirm_password" type="password" autocomplete="new-password" minlength="12" required>
+            </div>
+            <div class="actions"><button type="submit">Update password</button></div>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel span-12">
+        <div class="panel-head"><h2>Keys</h2></div>
+        <div class="panel-body">
+          <table>
+            <thead><tr><th>ID</th><th>Bound email</th><th>Created</th><th>Expires</th><th>Status</th><th>Action</th></tr></thead>
+            <tbody>
+            {{range .Keys}}
+            <tr>
+              <td><code>{{.ID}}</code></td>
+              <td>{{if .BoundEmail}}{{.BoundEmail}}{{else}}Any allowed domain{{end}}</td>
+              <td>{{.CreatedAt}}</td>
+              <td>{{.ExpiresAt}}</td>
+              <td><span class="status">{{.Status}}</span></td>
+              <td>
+                {{if eq .Status "unused"}}
+                <form method="post" action="/admin/revoke" class="actions">
+                  <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
+                  <input type="hidden" name="id" value="{{.ID}}">
+                  <button class="danger" type="submit">Revoke</button>
+                </form>
+                {{end}}
+              </td>
+            </tr>
+            {{else}}
+            <tr><td colspan="6" class="muted">No keys yet.</td></tr>
             {{end}}
-          </td>
-        </tr>
-      {{else}}
-        <tr><td colspan="6" class="muted">No keys yet.</td></tr>
-      {{end}}
-      </tbody>
-    </table>
-  </section>
-</main>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
 </body>
 </html>
 {{end}}
@@ -223,27 +500,27 @@ const loginHTML = `
 </head>
 <body>
 <main class="login">
-  <section class="panel">
+  <section class="login-card">
     <h1>Sign in</h1>
-    <p>Use an allowed email domain and one-time key to continue.</p>
-    <pre>{{.AllowedDomains}}</pre>
+    <p>Use an allowed email domain and one-time key.</p>
+    <pre style="margin:14px 0;">{{.AllowedDomains}}</pre>
     {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
-    <form method="post" action="/login">
+    <form method="post" action="/login" class="stack">
       <input type="hidden" name="response_type" value="{{.Auth.ResponseType}}">
       <input type="hidden" name="client_id" value="{{.Auth.ClientID}}">
       <input type="hidden" name="redirect_uri" value="{{.Auth.RedirectURI}}">
       <input type="hidden" name="scope" value="{{.Auth.Scope}}">
       <input type="hidden" name="state" value="{{.Auth.State}}">
       <input type="hidden" name="nonce" value="{{.Auth.Nonce}}">
-      <p>
+      <div>
         <label>Email</label>
         <input name="email" type="email" autocomplete="username" required>
-      </p>
-      <p>
+      </div>
+      <div>
         <label>One-time key</label>
         <input name="key" type="password" autocomplete="one-time-code" required>
-      </p>
-      <button type="submit">Continue</button>
+      </div>
+      <div class="actions"><button type="submit">Continue</button></div>
     </form>
   </section>
 </main>
