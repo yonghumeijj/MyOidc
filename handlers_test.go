@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"net/http/httptest"
 	"testing"
 )
@@ -37,5 +38,27 @@ func TestMaybeAdoptCurrentIssuerFromAdminHost(t *testing.T) {
 	}
 	if got, err := store.TenantByHost("oidc.ai90.net"); err != nil || got.ID != tenant.ID {
 		t.Fatalf("TenantByHost after adoption = %#v, %v", got, err)
+	}
+}
+
+func TestClientCredentialsDecodeOAuthBasicAuth(t *testing.T) {
+	req := httptest.NewRequest("POST", "https://oidc.example/token", nil)
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("openai:secret%2Bwith%2Fchars%3D")))
+
+	clientID, clientSecret := clientCredentials(req)
+	if clientID != "openai" {
+		t.Fatalf("clientID = %q, want openai", clientID)
+	}
+	if clientSecret != "secret+with/chars=" {
+		t.Fatalf("clientSecret = %q, want decoded secret", clientSecret)
+	}
+}
+
+func TestShouldAdoptPublicHTTPToHTTPSIssuer(t *testing.T) {
+	if !shouldAdoptIssuer("https://oidc.ai90.net", "http://oidc.ai90.net") {
+		t.Fatalf("should adopt public http issuer to https")
+	}
+	if shouldAdoptIssuer("https://oidc.ai90.net", "https://oidc.ai90.net") {
+		t.Fatalf("should not adopt matching https issuer")
 	}
 }

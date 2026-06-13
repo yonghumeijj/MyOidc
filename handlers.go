@@ -444,6 +444,12 @@ func authRequestFromValues(v url.Values) AuthRequest {
 func clientCredentials(r *http.Request) (string, string) {
 	user, pass, ok := r.BasicAuth()
 	if ok {
+		if decoded, err := url.QueryUnescape(user); err == nil {
+			user = decoded
+		}
+		if decoded, err := url.QueryUnescape(pass); err == nil {
+			pass = decoded
+		}
 		return user, pass
 	}
 	return "", ""
@@ -564,7 +570,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, generated []Ge
 
 func (a *App) maybeAdoptCurrentIssuer(r *http.Request, tenant Tenant) (Tenant, string, error) {
 	origin := currentOrigin(r)
-	if origin == "" || isLocalOrigin(origin) || !isLocalOrigin(tenant.IssuerURL) {
+	if origin == "" || isLocalOrigin(origin) || !shouldAdoptIssuer(origin, tenant.IssuerURL) {
 		return tenant, "", nil
 	}
 	updated, err := a.store.SaveTenant(TenantInput{
@@ -578,7 +584,21 @@ func (a *App) maybeAdoptCurrentIssuer(r *http.Request, tenant Tenant) (Tenant, s
 	if err != nil {
 		return tenant, "", err
 	}
-	return updated, "Default issuer URL updated from localhost to " + origin + ".", nil
+	return updated, "Issuer URL updated to " + origin + ".", nil
+}
+
+func shouldAdoptIssuer(origin string, current string) bool {
+	if isLocalOrigin(current) {
+		return true
+	}
+	originURL, originErr := url.Parse(origin)
+	currentURL, currentErr := url.Parse(current)
+	if originErr != nil || currentErr != nil {
+		return false
+	}
+	return originURL.Scheme == "https" &&
+		currentURL.Scheme == "http" &&
+		normalizeHost(originURL.Host) == normalizeHost(currentURL.Host)
 }
 
 func currentOrigin(r *http.Request) string {
@@ -593,6 +613,8 @@ func currentOrigin(r *http.Request) string {
 	proto := strings.ToLower(firstHeaderValue(r.Header.Get("X-Forwarded-Proto")))
 	if proto == "" {
 		if r.TLS != nil {
+			proto = "https"
+		} else if !isLocalHost(host) {
 			proto = "https"
 		} else {
 			proto = "http"
@@ -616,7 +638,10 @@ func isLocalOrigin(origin string) bool {
 	if err != nil {
 		return false
 	}
-	host := normalizeHost(u.Host)
+	return isLocalHost(normalizeHost(u.Host))
+}
+
+func isLocalHost(host string) bool {
 	return host == "localhost" ||
 		strings.HasPrefix(host, "localhost:") ||
 		host == "127.0.0.1" ||

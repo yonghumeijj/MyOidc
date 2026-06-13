@@ -129,6 +129,12 @@ the OIDC_CLIENT_SECRET value
 
 Keep SSO optional until a full login test succeeds.
 
+If OpenAI reports `invalid_client`, check:
+
+- `https://your-issuer/.well-known/openid-configuration` must return `https://` issuer and token endpoint URLs.
+- OpenAI's Client ID and Client Secret must exactly match the selected tenant in `/admin`.
+- If you changed OpenAI Team/workspace, update the tenant's allowed redirect URI to the new OpenAI callback URL.
+
 ## Multi-Tenant Setup
 
 Open `/admin` to add or edit tenants. In the common single-issuer setup, keep one tenant:
