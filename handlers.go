@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -183,46 +184,56 @@ func (a *App) handleAdminPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	rid := requestID()
 	tenant, ok := a.tenantForRequest(w, r)
 	if !ok {
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		log.Printf("oidc authorize rejected rid=%s reason=%q host=%q method=%q", rid, "method_not_allowed", r.Host, r.Method)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
+		log.Printf("oidc authorize rejected rid=%s reason=%q host=%q err=%q", rid, "invalid_request", r.Host, err.Error())
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 	auth := authRequestFromValues(r.Form)
 	if err := a.validateAuthRequest(tenant, auth); err != nil {
+		log.Printf("oidc authorize rejected rid=%s reason=%q host=%q tenant=%q issuer=%q client_id=%q redirect_uri=%q response_type=%q scope=%q", rid, err.Error(), r.Host, tenant.ID, tenant.IssuerURL, auth.ClientID, auth.RedirectURI, auth.ResponseType, auth.Scope)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if email, ok := a.readSessionEmail(r, tenant); ok {
-		a.redirectWithCode(w, r, tenant, auth, email)
+		log.Printf("oidc authorize session_ok rid=%s host=%q tenant=%q issuer=%q client_id=%q redirect_uri=%q email_hash=%q email_domain=%q", rid, r.Host, tenant.ID, tenant.IssuerURL, auth.ClientID, auth.RedirectURI, hashPrefixForLog(email), emailDomainForLog(email))
+		a.redirectWithCode(w, r, tenant, auth, email, rid)
 		return
 	}
+	log.Printf("oidc authorize login_required rid=%s host=%q tenant=%q issuer=%q client_id=%q redirect_uri=%q scope=%q", rid, r.Host, tenant.ID, tenant.IssuerURL, auth.ClientID, auth.RedirectURI, auth.Scope)
 	a.renderLogin(w, tenant, auth, "")
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
+	rid := requestID()
 	tenant, ok := a.tenantForRequest(w, r)
 	if !ok {
 		return
 	}
 	if r.Method != http.MethodPost {
+		log.Printf("oidc login rejected rid=%s reason=%q host=%q method=%q", rid, "method_not_allowed", r.Host, r.Method)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
+		log.Printf("oidc login rejected rid=%s reason=%q host=%q err=%q", rid, "invalid_request", r.Host, err.Error())
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 	auth := authRequestFromValues(r.Form)
 	if err := a.validateAuthRequest(tenant, auth); err != nil {
+		log.Printf("oidc login rejected rid=%s reason=%q host=%q tenant=%q issuer=%q client_id=%q redirect_uri=%q response_type=%q scope=%q", rid, err.Error(), r.Host, tenant.ID, tenant.IssuerURL, auth.ClientID, auth.RedirectURI, auth.ResponseType, auth.Scope)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -230,6 +241,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	email := normalizeEmail(r.FormValue("email"))
 	key := strings.TrimSpace(r.FormValue("key"))
 	if email == "" || key == "" {
+		log.Printf("oidc login rejected rid=%s reason=%q host=%q tenant=%q email_present=%t key_present=%t", rid, "missing_email_or_key", r.Host, tenant.ID, email != "", key != "")
 		a.renderLogin(w, tenant, auth, "email and key are required")
 		return
 	}
@@ -238,63 +250,81 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidEmailDomain):
+			log.Printf("oidc login rejected rid=%s reason=%q host=%q tenant=%q email_hash=%q email_domain=%q allowed_domains=%q", rid, "invalid_email_domain", r.Host, tenant.ID, hashPrefixForLog(email), emailDomainForLog(email), tenant.AllowedDomains)
 			a.renderLogin(w, tenant, auth, fmt.Sprintf("email must match one of: %s", allowedDomainsLabel(tenant)))
 		default:
+			log.Printf("oidc login rejected rid=%s reason=%q host=%q tenant=%q email_hash=%q email_domain=%q key_hash=%q", rid, "invalid_invite_key", r.Host, tenant.ID, hashPrefixForLog(email), emailDomainForLog(email), hashPrefixForLog(key))
 			a.renderLogin(w, tenant, auth, "key is invalid, used, expired, revoked, or bound to another email")
 		}
 		return
 	}
 
+	log.Printf("oidc login success rid=%s host=%q tenant=%q email_hash=%q email_domain=%q", rid, r.Host, tenant.ID, hashPrefixForLog(user.Email), emailDomainForLog(user.Email))
 	a.setSessionCookie(w, tenant, user.Email)
-	a.redirectWithCode(w, r, tenant, auth, user.Email)
+	a.redirectWithCode(w, r, tenant, auth, user.Email, rid)
 }
 
 func (a *App) handleToken(w http.ResponseWriter, r *http.Request) {
+	rid := requestID()
 	tenant, ok := a.tenantForRequest(w, r)
 	if !ok {
 		return
 	}
 	if r.Method != http.MethodPost {
+		log.Printf("oidc token rejected rid=%s reason=%q host=%q method=%q", rid, "method_not_allowed", r.Host, r.Method)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method_not_allowed"})
 		return
 	}
 	if err := r.ParseForm(); err != nil {
+		log.Printf("oidc token rejected rid=%s reason=%q host=%q err=%q", rid, "invalid_request", r.Host, err.Error())
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_request"})
 		return
 	}
 
-	clientID, clientSecret := clientCredentials(r)
+	clientID, clientSecret, authMethod := clientCredentials(r)
 	if clientID == "" {
 		clientID = r.FormValue("client_id")
 	}
 	if clientSecret == "" {
 		clientSecret = r.FormValue("client_secret")
 	}
+	if authMethod == "" && (r.FormValue("client_id") != "" || r.FormValue("client_secret") != "") {
+		authMethod = "client_secret_post"
+	}
+	if authMethod == "" {
+		authMethod = "none"
+	}
+	log.Printf("oidc token request rid=%s host=%q tenant=%q issuer=%q auth_method=%q grant_type=%q client_id=%q redirect_uri=%q code_hash=%q secret_present=%t secret_len=%d", rid, r.Host, tenant.ID, tenant.IssuerURL, authMethod, r.FormValue("grant_type"), clientID, r.FormValue("redirect_uri"), hashPrefixForLog(r.FormValue("code")), clientSecret != "", len(clientSecret))
 	if clientID != tenant.ClientID || !constantTimeStringEqual(clientSecret, tenant.ClientSecret) {
+		log.Printf("oidc token invalid_client rid=%s reason=%q host=%q tenant=%q issuer=%q auth_method=%q client_id=%q expected_client_id=%q client_id_match=%t secret_present=%t secret_len=%d expected_secret_len=%d", rid, invalidClientReason(clientID, clientSecret, tenant), r.Host, tenant.ID, tenant.IssuerURL, authMethod, clientID, tenant.ClientID, clientID == tenant.ClientID, clientSecret != "", len(clientSecret), len(tenant.ClientSecret))
 		w.Header().Set("WWW-Authenticate", `Basic realm="gooidc"`)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid_client"})
 		return
 	}
 
 	if r.FormValue("grant_type") != "authorization_code" {
+		log.Printf("oidc token rejected rid=%s reason=%q host=%q tenant=%q grant_type=%q", rid, "unsupported_grant_type", r.Host, tenant.ID, r.FormValue("grant_type"))
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported_grant_type"})
 		return
 	}
 
 	redirectURI := r.FormValue("redirect_uri")
 	if !validRedirectURI(tenant, redirectURI) {
+		log.Printf("oidc token rejected rid=%s reason=%q host=%q tenant=%q redirect_uri=%q configured_redirects=%d", rid, "invalid_redirect_uri", r.Host, tenant.ID, redirectURI, len(tenant.RedirectURIList()))
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_redirect_uri"})
 		return
 	}
 
 	user, authCode, err := a.store.ConsumeAuthCode(tenant.ID, r.FormValue("code"), clientID, redirectURI)
 	if err != nil {
+		log.Printf("oidc token rejected rid=%s reason=%q host=%q tenant=%q client_id=%q redirect_uri=%q code_hash=%q err=%q", rid, "invalid_grant", r.Host, tenant.ID, clientID, redirectURI, hashPrefixForLog(r.FormValue("code")), err.Error())
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_grant"})
 		return
 	}
 
 	accessToken, err := a.store.CreateAccessToken(tenant.ID, user.Email)
 	if err != nil {
+		log.Printf("oidc token failed rid=%s reason=%q host=%q tenant=%q email_hash=%q err=%q", rid, "create_access_token", r.Host, tenant.ID, hashPrefixForLog(user.Email), err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "server_error"})
 		return
 	}
@@ -321,10 +351,12 @@ func (a *App) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	idToken, err := a.signer.SignIDToken(claims)
 	if err != nil {
+		log.Printf("oidc token failed rid=%s reason=%q host=%q tenant=%q email_hash=%q err=%q", rid, "sign_id_token", r.Host, tenant.ID, hashPrefixForLog(user.Email), err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "server_error"})
 		return
 	}
 
+	log.Printf("oidc token success rid=%s host=%q tenant=%q issuer=%q client_id=%q redirect_uri=%q email_hash=%q email_domain=%q auth_time=%d access_token_hash=%q", rid, r.Host, tenant.ID, tenant.IssuerURL, clientID, redirectURI, hashPrefixForLog(user.Email), emailDomainForLog(user.Email), authCode.CreatedAt.Unix(), hashPrefixForLog(accessToken))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": accessToken,
 		"id_token":     idToken,
@@ -334,22 +366,26 @@ func (a *App) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleUserinfo(w http.ResponseWriter, r *http.Request) {
+	rid := requestID()
 	tenant, ok := a.tenantForRequest(w, r)
 	if !ok {
 		return
 	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		log.Printf("oidc userinfo rejected rid=%s reason=%q host=%q tenant=%q auth_present=%t", rid, "missing_bearer_token", r.Host, tenant.ID, auth != "")
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid_token"})
 		return
 	}
 	token := strings.TrimSpace(auth[len("Bearer "):])
 	user, err := a.store.LookupAccessToken(tenant.ID, token)
 	if err != nil {
+		log.Printf("oidc userinfo rejected rid=%s reason=%q host=%q tenant=%q token_hash=%q err=%q", rid, "invalid_token", r.Host, tenant.ID, hashPrefixForLog(token), err.Error())
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid_token"})
 		return
 	}
 	givenName, familyName := profileNames(user.Email)
+	log.Printf("oidc userinfo success rid=%s host=%q tenant=%q email_hash=%q email_domain=%q", rid, r.Host, tenant.ID, hashPrefixForLog(user.Email), emailDomainForLog(user.Email))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sub":                user.Sub,
 		"email":              user.Email,
@@ -389,14 +425,16 @@ func (a *App) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"keys": []map[string]string{a.signer.JWK()}})
 }
 
-func (a *App) redirectWithCode(w http.ResponseWriter, r *http.Request, tenant Tenant, auth AuthRequest, email string) {
+func (a *App) redirectWithCode(w http.ResponseWriter, r *http.Request, tenant Tenant, auth AuthRequest, email string, rid string) {
 	code, err := a.store.CreateAuthCode(tenant.ID, email, auth.ClientID, auth.RedirectURI, auth.Nonce, auth.Scope)
 	if err != nil {
+		log.Printf("oidc authorize failed rid=%s reason=%q host=%q tenant=%q client_id=%q redirect_uri=%q email_hash=%q err=%q", rid, "create_auth_code", r.Host, tenant.ID, auth.ClientID, auth.RedirectURI, hashPrefixForLog(email), err.Error())
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return
 	}
 	u, err := url.Parse(auth.RedirectURI)
 	if err != nil {
+		log.Printf("oidc authorize rejected rid=%s reason=%q host=%q tenant=%q redirect_uri=%q err=%q", rid, "invalid_redirect_uri_parse", r.Host, tenant.ID, auth.RedirectURI, err.Error())
 		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
 		return
 	}
@@ -406,6 +444,7 @@ func (a *App) redirectWithCode(w http.ResponseWriter, r *http.Request, tenant Te
 		q.Set("state", auth.State)
 	}
 	u.RawQuery = q.Encode()
+	log.Printf("oidc authorize code_issued rid=%s host=%q tenant=%q issuer=%q client_id=%q redirect_uri=%q code_hash=%q email_hash=%q email_domain=%q", rid, r.Host, tenant.ID, tenant.IssuerURL, auth.ClientID, auth.RedirectURI, hashPrefixForLog(code), hashPrefixForLog(email), emailDomainForLog(email))
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
@@ -447,7 +486,7 @@ func authRequestFromValues(v url.Values) AuthRequest {
 	}
 }
 
-func clientCredentials(r *http.Request) (string, string) {
+func clientCredentials(r *http.Request) (string, string, string) {
 	user, pass, ok := r.BasicAuth()
 	if ok {
 		if decoded, err := url.QueryUnescape(user); err == nil {
@@ -456,9 +495,9 @@ func clientCredentials(r *http.Request) (string, string) {
 		if decoded, err := url.QueryUnescape(pass); err == nil {
 			pass = decoded
 		}
-		return user, pass
+		return user, pass, "client_secret_basic"
 	}
-	return "", ""
+	return "", "", ""
 }
 
 func scopeContains(scope string, want string) bool {
@@ -481,6 +520,45 @@ func profileGivenName(email string) string {
 		return email[:at]
 	}
 	return email
+}
+
+func requestID() string {
+	return randomToken(6)
+}
+
+func invalidClientReason(clientID string, clientSecret string, tenant Tenant) string {
+	switch {
+	case clientID == "":
+		return "missing_client_id"
+	case clientID != tenant.ClientID:
+		return "client_id_mismatch"
+	case clientSecret == "":
+		return "missing_client_secret"
+	case !constantTimeStringEqual(clientSecret, tenant.ClientSecret):
+		return "client_secret_mismatch"
+	default:
+		return "unknown"
+	}
+}
+
+func hashPrefixForLog(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "empty"
+	}
+	hash := hashToken(value)
+	if len(hash) > 12 {
+		return hash[:12]
+	}
+	return hash
+}
+
+func emailDomainForLog(email string) string {
+	email = normalizeEmail(email)
+	if at := strings.LastIndex(email, "@"); at >= 0 && at+1 < len(email) {
+		return email[at+1:]
+	}
+	return ""
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -517,6 +595,7 @@ func (a *App) setAdminPassword(password string) {
 func (a *App) tenantForRequest(w http.ResponseWriter, r *http.Request) (Tenant, bool) {
 	tenant, err := a.store.TenantByHost(r.Host)
 	if err != nil {
+		log.Printf("oidc tenant_unknown host=%q path=%q remote=%q err=%q", r.Host, r.URL.Path, r.RemoteAddr, err.Error())
 		http.Error(w, "unknown issuer host", http.StatusNotFound)
 		return Tenant{}, false
 	}

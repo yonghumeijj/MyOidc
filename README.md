@@ -138,6 +138,27 @@ If OpenAI reports `invalid_client`, check:
 ID tokens include the OpenAI-required `sub`, `email`, `given_name`, and `family_name` claims.
 `given_name` is derived from the email local part and `family_name` is an empty string.
 
+## Troubleshooting Logs
+
+Runtime diagnostics are written to standard output. On Docker, watch the latest logs with:
+
+```bash
+docker logs -f --tail=200 gooidc
+```
+
+For OpenAI SSO failures, retry one login and look for lines beginning with:
+
+```text
+oidc authorize
+oidc login
+oidc token
+oidc userinfo
+```
+
+`invalid_client` failures include the auth method, client ID match status, redirect URI, and
+secret length checks. Logs do not print raw client secrets, one-time keys, authorization
+codes, or access tokens.
+
 ## Multi-Tenant Setup
 
 Open `/admin` to add or edit tenants. In the common single-issuer setup, keep one tenant:

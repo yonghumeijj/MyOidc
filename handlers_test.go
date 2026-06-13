@@ -45,12 +45,15 @@ func TestClientCredentialsDecodeOAuthBasicAuth(t *testing.T) {
 	req := httptest.NewRequest("POST", "https://oidc.example/token", nil)
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("openai:secret%2Bwith%2Fchars%3D")))
 
-	clientID, clientSecret := clientCredentials(req)
+	clientID, clientSecret, authMethod := clientCredentials(req)
 	if clientID != "openai" {
 		t.Fatalf("clientID = %q, want openai", clientID)
 	}
 	if clientSecret != "secret+with/chars=" {
 		t.Fatalf("clientSecret = %q, want decoded secret", clientSecret)
+	}
+	if authMethod != "client_secret_basic" {
+		t.Fatalf("authMethod = %q, want client_secret_basic", authMethod)
 	}
 }
 
