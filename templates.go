@@ -174,6 +174,11 @@ input, textarea, select {
   padding: 10px 11px;
 }
 textarea { min-height: 112px; resize: vertical; }
+textarea.compact { min-height: 62px; }
+input.compact, textarea.compact, select.compact {
+  padding: 8px 9px;
+  font-size: 13px;
+}
 input:focus, textarea:focus, select:focus {
   outline: 2px solid rgba(31,111,235,.20);
   border-color: var(--brand);
@@ -182,6 +187,11 @@ input:focus, textarea:focus, select:focus {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+.email-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px;
+  gap: 8px;
 }
 .full { grid-column: 1 / -1; }
 .actions {
@@ -252,7 +262,7 @@ td { overflow-wrap: anywhere; }
 }
 @media (max-width: 640px) {
   .topbar { flex-direction: column; }
-  .form-grid { grid-template-columns: 1fr; }
+  .form-grid, .email-row { grid-template-columns: 1fr; }
   .summary { grid-template-columns: 1fr; gap: 0; }
   .summary dt { padding-bottom: 0; }
 }
@@ -305,7 +315,7 @@ const adminHTML = `
     <section class="panel span-12" style="margin-bottom:16px;">
       <div class="panel-head"><h2>Generated keys</h2></div>
       <div class="panel-body stack">
-        <div class="notice">Copy these now. Plaintext keys are not stored.</div>
+        <div class="notice">New keys remain visible in the key list below.</div>
         <textarea readonly>{{range .Generated}}{{if .BoundEmail}}{{.BoundEmail}},{{end}}{{.Key}}
 {{end}}</textarea>
         <table>
@@ -356,13 +366,17 @@ const adminHTML = `
                 <label>Expires after hours</label>
                 <input name="expires_hours" type="number" min="0" value="168">
               </div>
+              <div>
+                <label>Max bound emails</label>
+                <input name="max_uses" type="number" min="1" max="1000" value="1">
+              </div>
               <div class="full">
                 <label>Optional bound emails</label>
                 <textarea name="bound_emails" placeholder="user1@{{.Tenant.PrimaryAllowedDomain}}
 user2@{{.Tenant.PrimaryAllowedDomain}}"></textarea>
               </div>
             </div>
-            <div class="actions"><button type="submit">Generate</button><span class="muted">Use 0 for no expiry.</span></div>
+            <div class="actions"><button type="submit">Generate</button><span class="muted">Use 0 for no expiry. Bound emails restrict each generated key to that mailbox.</span></div>
           </form>
         </div>
       </section>
@@ -454,27 +468,74 @@ aaa.com" required></textarea>
         <div class="panel-head"><h2>Keys</h2></div>
         <div class="panel-body">
           <table>
-            <thead><tr><th>ID</th><th>Bound email</th><th>Created</th><th>Expires</th><th>Status</th><th>Action</th></tr></thead>
+            <thead><tr><th>ID</th><th>Key</th><th>Restricted email</th><th>Bound users</th><th>Usage</th><th>Created</th><th>Expires</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>
+            <tr>
+              <td>New</td>
+              <td>
+                <input form="key-create" class="mono compact" name="key" placeholder="blank generates random">
+                <input form="key-create" type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
+              </td>
+              <td><input form="key-create" class="compact" name="bound_email" placeholder="optional"></td>
+              <td class="muted">None</td>
+              <td><input form="key-create" class="compact" name="max_uses" type="number" min="1" max="1000" value="1"></td>
+              <td class="muted">Now</td>
+              <td><input form="key-create" class="compact" name="expires_at" type="datetime-local"></td>
+              <td><span class="status">new</span></td>
+              <td>
+                <form id="key-create" method="post" action="/admin/key/save"></form>
+                <button form="key-create" type="submit">Create</button>
+              </td>
+            </tr>
             {{range .Keys}}
             <tr>
-              <td><code>{{.ID}}</code></td>
-              <td>{{if .BoundEmail}}{{.BoundEmail}}{{else}}Any allowed domain{{end}}</td>
+              <td>
+                <code>{{.ID}}</code>
+                <input form="key-save-{{.ID}}" type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
+                <input form="key-save-{{.ID}}" type="hidden" name="id" value="{{.ID}}">
+              </td>
+              <td>
+                {{if .Key}}
+                <input form="key-save-{{.ID}}" class="mono compact" name="key" value="{{.Key}}">
+                {{else}}
+                <input form="key-save-{{.ID}}" class="mono compact" name="key" placeholder="legacy hidden; enter a new key to replace">
+                {{end}}
+              </td>
+              <td><input form="key-save-{{.ID}}" class="compact" name="bound_email" value="{{.BoundEmail}}" placeholder="any allowed domain"></td>
+              <td>
+                {{if .Bindings}}<textarea class="compact" readonly>{{.Bindings}}</textarea>{{else}}<span class="muted">None</span>{{end}}
+              </td>
+              <td><input form="key-save-{{.ID}}" class="compact" name="max_uses" type="number" min="1" max="1000" value="{{.MaxUses}}"><div class="muted">{{.UsedCount}} / {{.MaxUses}}</div></td>
               <td>{{.CreatedAt}}</td>
-              <td>{{.ExpiresAt}}</td>
+              <td><input form="key-save-{{.ID}}" class="compact" name="expires_at" type="datetime-local" value="{{.ExpiresInput}}"><div class="muted">{{.ExpiresAt}}</div></td>
               <td><span class="status">{{.Status}}</span></td>
               <td>
-                {{if eq .Status "unused"}}
-                <form method="post" action="/admin/revoke" class="actions">
+                <div class="actions">
+                  <form id="key-save-{{.ID}}" method="post" action="/admin/key/save"></form>
+                  <button form="key-save-{{.ID}}" type="submit">Save</button>
+                  {{if .Revoked}}
+                  <form method="post" action="/admin/restore">
+                    <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
+                    <input type="hidden" name="id" value="{{.ID}}">
+                    <button class="secondary" type="submit">Restore</button>
+                  </form>
+                  {{else}}
+                  <form method="post" action="/admin/revoke">
+                    <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
+                    <input type="hidden" name="id" value="{{.ID}}">
+                    <button class="secondary" type="submit">Revoke</button>
+                  </form>
+                  {{end}}
+                  <form method="post" action="/admin/key/delete" onsubmit="return confirm('Delete this key?');">
                   <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
                   <input type="hidden" name="id" value="{{.ID}}">
-                  <button class="danger" type="submit">Revoke</button>
-                </form>
-                {{end}}
+                    <button class="danger" type="submit">Delete</button>
+                  </form>
+                </div>
               </td>
             </tr>
             {{else}}
-            <tr><td colspan="6" class="muted">No keys yet.</td></tr>
+            <tr><td colspan="9" class="muted">No keys yet.</td></tr>
             {{end}}
             </tbody>
           </table>
@@ -502,7 +563,7 @@ const loginHTML = `
 <main class="login">
   <section class="login-card">
     <h1>Sign in</h1>
-    <p>Use an allowed email domain and one-time key.</p>
+    <p>Use your email name and key.</p>
     <pre style="margin:14px 0;">{{.AllowedDomains}}</pre>
     {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
     <form method="post" action="/login" class="stack">
@@ -514,10 +575,17 @@ const loginHTML = `
       <input type="hidden" name="nonce" value="{{.Auth.Nonce}}">
       <div>
         <label>Email</label>
-        <input name="email" type="email" autocomplete="username" required>
+        <div class="email-row">
+          <input name="email_local" autocomplete="username" placeholder="name" required>
+          <select name="email_domain" aria-label="Email domain">
+            {{range .AllowedDomainList}}
+            <option value="{{.}}" {{if eq . $.PrimaryDomain}}selected{{end}}>@{{.}}</option>
+            {{end}}
+          </select>
+        </div>
       </div>
       <div>
-        <label>One-time key</label>
+        <label>Login key</label>
         <input name="key" type="password" autocomplete="one-time-code" required>
       </div>
       <div class="actions"><button type="submit">Continue</button></div>

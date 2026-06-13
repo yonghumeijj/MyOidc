@@ -2,8 +2,8 @@
 
 A small OpenID Connect provider for a narrow use case:
 
-- Admin generates one-time login keys.
-- User signs in with `email + one-time key`.
+- Admin creates and manages login keys.
+- User signs in with an allowed email name/domain and login key.
 - Email must belong to one of the configured tenant email domains.
 - OpenAI/ChatGPT Business uses this service as a Custom OIDC SSO provider.
 
@@ -156,7 +156,7 @@ oidc userinfo
 ```
 
 `invalid_client` failures include the auth method, client ID match status, redirect URI, and
-secret length checks. Logs do not print raw client secrets, one-time keys, authorization
+secret length checks. Logs do not print raw client secrets, login keys, authorization
 codes, or access tokens.
 
 ## Multi-Tenant Setup
@@ -191,8 +191,10 @@ Your reverse proxy must preserve the original `Host` header:
 proxy_set_header Host $host;
 ```
 
-Generate one-time keys from the selected tenant in `/admin`. Unbound keys are scoped to
-that tenant only and can be used with any allowed email domain in that tenant.
+Create and edit login keys from the selected tenant in `/admin`. A key is scoped to that
+tenant only. By default, a key can bind to one email address. On first successful login,
+an unbound key is bound to that email; the same email can reuse the same key later. Increase
+the key's max bound email count if one key should allow multiple different email addresses.
 
 The admin password can also be changed in `/admin`. When `ADMIN_PASSWORD` is set as an
 environment variable, that value will be used again after container restart; omit it if you
@@ -200,11 +202,12 @@ want the password stored in `/data/admin_password.txt` to be the source of truth
 
 ## Security Notes
 
-- Keys are random and stored only as SHA-256 hashes.
-- Plaintext keys are shown once after generation.
-- Each key can be used once.
-- A key can optionally be bound to a specific email.
-- If a key is not bound to an email, anyone holding it can choose any email in that tenant's allowed domains.
+- New keys are stored as plaintext for admin visibility and as SHA-256 hashes for lookup.
+- Treat `DATA_DIR/store.db` as sensitive because it contains visible login keys.
+- Each key can bind to a configured number of email addresses; the default is 1.
+- A bound email can reuse the same key for later logins.
+- A key can optionally be restricted to a specific email before first use.
+- If a key is unrestricted and unbound, anyone holding it can bind it to an allowed email until its max bound email count is reached.
 - Keys, authorization codes, and access tokens are scoped to one tenant.
 - Configure `OIDC_REDIRECT_URIS`; leaving it empty accepts any redirect URI.
 - Put this service behind HTTPS before using it with OpenAI.

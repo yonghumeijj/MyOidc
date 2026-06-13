@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -40,7 +42,7 @@ func newTestTenant(t *testing.T, store *Store) Tenant {
 	return tenant
 }
 
-func TestUseInviteKeyConsumesKeyOnce(t *testing.T) {
+func TestUseInviteKeyBindsAndAllowsSameEmail(t *testing.T) {
 	store := newTestStore(t)
 	tenant := newTestTenant(t, store)
 	generated, err := store.GenerateKeys(tenant.ID, 1, nil, nil)
@@ -56,8 +58,22 @@ func TestUseInviteKeyConsumesKeyOnce(t *testing.T) {
 		t.Fatalf("user email = %q, want normalized email", user.Email)
 	}
 
-	if _, err := store.UseInviteKey(tenant.ID, "person@example.com", generated[0].Key, tenant.AllowedDomains); !errors.Is(err, ErrInvalidInviteKey) {
-		t.Fatalf("second UseInviteKey err = %v, want ErrInvalidInviteKey", err)
+	if _, err := store.UseInviteKey(tenant.ID, "person@example.com", generated[0].Key, tenant.AllowedDomains); err != nil {
+		t.Fatalf("same email UseInviteKey: %v", err)
+	}
+	if _, err := store.UseInviteKey(tenant.ID, "other@example.com", generated[0].Key, tenant.AllowedDomains); !errors.Is(err, ErrInvalidInviteKey) {
+		t.Fatalf("different email UseInviteKey err = %v, want ErrInvalidInviteKey", err)
+	}
+
+	keys := store.KeyViews(tenant.ID)
+	if len(keys) != 1 {
+		t.Fatalf("KeyViews len = %d, want 1", len(keys))
+	}
+	if keys[0].BoundEmail != "person@example.com" {
+		t.Fatalf("BoundEmail = %q, want person@example.com", keys[0].BoundEmail)
+	}
+	if keys[0].UsedCount != 1 || keys[0].MaxUses != 1 {
+		t.Fatalf("usage = %d/%d, want 1/1", keys[0].UsedCount, keys[0].MaxUses)
 	}
 }
 
@@ -74,6 +90,9 @@ func TestUseInviteKeyHonorsBoundEmail(t *testing.T) {
 	}
 	if _, err := store.UseInviteKey(tenant.ID, "alice@example.com", generated[0].Key, tenant.AllowedDomains); err != nil {
 		t.Fatalf("correct bound email UseInviteKey: %v", err)
+	}
+	if _, err := store.UseInviteKey(tenant.ID, "alice@example.com", generated[0].Key, tenant.AllowedDomains); err != nil {
+		t.Fatalf("same bound email UseInviteKey: %v", err)
 	}
 }
 
@@ -118,7 +137,7 @@ func TestConsumeAuthCodeRejectsReuse(t *testing.T) {
 	}
 }
 
-func TestConcurrentInviteKeyUseOnlySucceedsOnce(t *testing.T) {
+func TestConcurrentInviteKeyUseBindsOnlyOneEmailByDefault(t *testing.T) {
 	store := newTestStore(t)
 	tenant := newTestTenant(t, store)
 	generated, err := store.GenerateKeys(tenant.ID, 1, nil, nil)
@@ -131,9 +150,9 @@ func TestConcurrentInviteKeyUseOnlySucceedsOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 25; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			_, err := store.UseInviteKey(tenant.ID, "person@example.com", generated[0].Key, tenant.AllowedDomains)
+			_, err := store.UseInviteKey(tenant.ID, fmt.Sprintf("person%d@example.com", i), generated[0].Key, tenant.AllowedDomains)
 			switch {
 			case err == nil:
 				atomic.AddInt64(&successes, 1)
@@ -142,7 +161,7 @@ func TestConcurrentInviteKeyUseOnlySucceedsOnce(t *testing.T) {
 			default:
 				t.Errorf("UseInviteKey: %v", err)
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 
@@ -151,6 +170,39 @@ func TestConcurrentInviteKeyUseOnlySucceedsOnce(t *testing.T) {
 	}
 	if invalids != 24 {
 		t.Fatalf("invalids = %d, want 24", invalids)
+	}
+}
+
+func TestInviteKeyMaxUsesAllowsMultipleBoundEmails(t *testing.T) {
+	store := newTestStore(t)
+	tenant := newTestTenant(t, store)
+	generated, err := store.GenerateKeysWithMaxUses(tenant.ID, 1, nil, nil, 2)
+	if err != nil {
+		t.Fatalf("GenerateKeysWithMaxUses: %v", err)
+	}
+
+	if _, err := store.UseInviteKey(tenant.ID, "alice@example.com", generated[0].Key, tenant.AllowedDomains); err != nil {
+		t.Fatalf("alice UseInviteKey: %v", err)
+	}
+	if _, err := store.UseInviteKey(tenant.ID, "bob@example.com", generated[0].Key, tenant.AllowedDomains); err != nil {
+		t.Fatalf("bob UseInviteKey: %v", err)
+	}
+	if _, err := store.UseInviteKey(tenant.ID, "alice@example.com", generated[0].Key, tenant.AllowedDomains); err != nil {
+		t.Fatalf("alice repeat UseInviteKey: %v", err)
+	}
+	if _, err := store.UseInviteKey(tenant.ID, "carol@example.com", generated[0].Key, tenant.AllowedDomains); !errors.Is(err, ErrInvalidInviteKey) {
+		t.Fatalf("carol UseInviteKey err = %v, want ErrInvalidInviteKey", err)
+	}
+
+	keys := store.KeyViews(tenant.ID)
+	if len(keys) != 1 {
+		t.Fatalf("KeyViews len = %d, want 1", len(keys))
+	}
+	if keys[0].UsedCount != 2 || keys[0].MaxUses != 2 {
+		t.Fatalf("usage = %d/%d, want 2/2", keys[0].UsedCount, keys[0].MaxUses)
+	}
+	if !strings.Contains(keys[0].Bindings, "alice@example.com") || !strings.Contains(keys[0].Bindings, "bob@example.com") {
+		t.Fatalf("Bindings = %q, want alice and bob", keys[0].Bindings)
 	}
 }
 

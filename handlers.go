@@ -33,9 +33,11 @@ type AdminPageData struct {
 }
 
 type LoginPageData struct {
-	Auth           AuthRequest
-	AllowedDomains string
-	Error          string
+	Auth              AuthRequest
+	AllowedDomains    string
+	AllowedDomainList []string
+	PrimaryDomain     string
+	Error             string
 }
 
 func (a *App) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +82,10 @@ func (a *App) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 	if count <= 0 {
 		count = 1
 	}
+	maxUses, _ := strconv.Atoi(r.FormValue("max_uses"))
+	if maxUses <= 0 {
+		maxUses = 1
+	}
 	expiresHours, _ := strconv.Atoi(r.FormValue("expires_hours"))
 	var expiresAt *time.Time
 	if expiresHours > 0 {
@@ -97,12 +103,12 @@ func (a *App) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 		boundEmails[i] = email
 	}
 
-	generated, err := a.store.GenerateKeys(tenant.ID, count, boundEmails, expiresAt)
+	_, err = a.store.GenerateKeysWithMaxUses(tenant.ID, count, boundEmails, expiresAt, maxUses)
 	if err != nil {
 		a.renderAdmin(w, r, nil, err.Error())
 		return
 	}
-	a.renderAdmin(w, r, generated, "")
+	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenant.ID)+"&notice=keys_created", http.StatusFound)
 }
 
 func (a *App) handleAdminRevoke(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +129,91 @@ func (a *App) handleAdminRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenantID), http.StatusFound)
+}
+
+func (a *App) handleAdminRestore(w http.ResponseWriter, r *http.Request) {
+	if !a.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderAdmin(w, r, nil, "invalid form")
+		return
+	}
+	tenantID := strings.TrimSpace(r.FormValue("tenant_id"))
+	if err := a.store.RestoreKey(tenantID, r.FormValue("id")); err != nil {
+		a.renderAdmin(w, r, nil, err.Error())
+		return
+	}
+	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenantID)+"&notice=key_restored", http.StatusFound)
+}
+
+func (a *App) handleAdminKeySave(w http.ResponseWriter, r *http.Request) {
+	if !a.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderAdmin(w, r, nil, "invalid form")
+		return
+	}
+	tenant, err := a.adminTenantFromRequest(r)
+	if err != nil {
+		a.renderAdmin(w, r, nil, err.Error())
+		return
+	}
+	boundEmail := normalizeEmail(r.FormValue("bound_email"))
+	if boundEmail != "" && !emailInDomains(boundEmail, tenant.AllowedDomains) {
+		a.renderAdmin(w, r, nil, fmt.Sprintf("bound email must match one of %s: %s", allowedDomainsLabel(tenant), boundEmail))
+		return
+	}
+	maxUses, _ := strconv.Atoi(r.FormValue("max_uses"))
+	if maxUses <= 0 {
+		maxUses = 1
+	}
+	expiresAt, err := parseExpiresInput(r.FormValue("expires_at"))
+	if err != nil {
+		a.renderAdmin(w, r, nil, err.Error())
+		return
+	}
+	if err := a.store.SaveInviteKey(InviteKeyInput{
+		TenantID:   tenant.ID,
+		ID:         r.FormValue("id"),
+		Key:        r.FormValue("key"),
+		BoundEmail: boundEmail,
+		MaxUses:    maxUses,
+		ExpiresAt:  expiresAt,
+	}); err != nil {
+		a.renderAdmin(w, r, nil, "save key failed: "+err.Error())
+		return
+	}
+	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenant.ID)+"&notice=key_saved", http.StatusFound)
+}
+
+func (a *App) handleAdminKeyDelete(w http.ResponseWriter, r *http.Request) {
+	if !a.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderAdmin(w, r, nil, "invalid form")
+		return
+	}
+	tenantID := strings.TrimSpace(r.FormValue("tenant_id"))
+	if err := a.store.DeleteKey(tenantID, r.FormValue("id")); err != nil {
+		a.renderAdmin(w, r, nil, "delete key failed: "+err.Error())
+		return
+	}
+	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenantID)+"&notice=key_deleted", http.StatusFound)
 }
 
 func (a *App) handleAdminTenants(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +329,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := normalizeEmail(r.FormValue("email"))
+	email := loginEmailFromRequest(r, tenant)
 	key := strings.TrimSpace(r.FormValue("key"))
 	if email == "" || key == "" {
 		log.Printf("oidc login rejected rid=%s reason=%q host=%q tenant=%q email_present=%t key_present=%t", rid, "missing_email_or_key", r.Host, tenant.ID, email != "", key != "")
@@ -522,6 +613,27 @@ func profileGivenName(email string) string {
 	return email
 }
 
+func loginEmailFromRequest(r *http.Request, tenant Tenant) string {
+	if email := normalizeEmail(r.FormValue("email")); email != "" {
+		return email
+	}
+	local := strings.TrimSpace(r.FormValue("email_local"))
+	domain := strings.TrimPrefix(strings.TrimSpace(r.FormValue("email_domain")), "@")
+	if local == "" {
+		return ""
+	}
+	if strings.Contains(local, "@") {
+		return normalizeEmail(local)
+	}
+	if domain == "" {
+		domain = tenant.PrimaryAllowedDomain()
+	}
+	if domain == "" {
+		return ""
+	}
+	return normalizeEmail(local + "@" + domain)
+}
+
 func requestID() string {
 	return randomToken(6)
 }
@@ -752,6 +864,14 @@ func adminNotice(r *http.Request) string {
 		return "Tenant settings saved."
 	case "password_saved":
 		return "Admin password updated."
+	case "keys_created":
+		return "Keys created."
+	case "key_saved":
+		return "Key saved."
+	case "key_deleted":
+		return "Key deleted."
+	case "key_restored":
+		return "Key restored."
 	default:
 		return ""
 	}
@@ -760,12 +880,28 @@ func adminNotice(r *http.Request) string {
 func (a *App) renderLogin(w http.ResponseWriter, tenant Tenant, auth AuthRequest, errText string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := pages.ExecuteTemplate(w, "login", LoginPageData{
-		Auth:           auth,
-		AllowedDomains: allowedDomainsLabel(tenant),
-		Error:          errText,
+		Auth:              auth,
+		AllowedDomains:    allowedDomainsLabel(tenant),
+		AllowedDomainList: tenant.AllowedDomainList(),
+		PrimaryDomain:     tenant.PrimaryAllowedDomain(),
+		Error:             errText,
 	}); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+func parseExpiresInput(raw string) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	for _, layout := range []string{"2006-01-02T15:04", time.RFC3339} {
+		if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+			utc := t.UTC()
+			return &utc, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid expiration time")
 }
 
 func allowedDomainsLabel(tenant Tenant) string {

@@ -39,8 +39,10 @@ type StoreData struct {
 
 type InviteKey struct {
 	ID         string     `json:"id"`
+	PlainKey   string     `json:"key,omitempty"`
 	Hash       string     `json:"hash"`
 	BoundEmail string     `json:"bound_email,omitempty"`
+	MaxUses    int        `json:"max_uses,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	UsedAt     *time.Time `json:"used_at,omitempty"`
@@ -121,6 +123,7 @@ type GeneratedKey struct {
 	ID         string
 	Key        string
 	BoundEmail string
+	MaxUses    int
 	ExpiresAt  *time.Time
 }
 
@@ -132,11 +135,27 @@ func (g GeneratedKey) ExpiresText() string {
 }
 
 type KeyView struct {
+	ID           string
+	Key          string
+	BoundEmail   string
+	Bindings     string
+	UsedCount    int
+	MaxUses      int
+	CreatedAt    string
+	ExpiresAt    string
+	ExpiresInput string
+	Status       string
+	Revoked      bool
+}
+
+type InviteKeyInput struct {
+	TenantID   string
 	ID         string
+	Key        string
 	BoundEmail string
-	CreatedAt  string
-	ExpiresAt  string
-	Status     string
+	MaxUses    int
+	ExpiresAt  *time.Time
+	Revoked    bool
 }
 
 func LoadStore(path string) (*Store, error) {
@@ -208,8 +227,10 @@ func (s *Store) migrateSchema() error {
 		`CREATE TABLE IF NOT EXISTS invite_keys (
 			id TEXT PRIMARY KEY,
 			tenant_id TEXT NOT NULL DEFAULT '',
+			plain_key TEXT NOT NULL DEFAULT '',
 			hash TEXT NOT NULL UNIQUE,
 			bound_email TEXT NOT NULL DEFAULT '',
+			max_uses INTEGER NOT NULL DEFAULT 1,
 			created_at INTEGER NOT NULL,
 			expires_at INTEGER,
 			used_at INTEGER,
@@ -218,6 +239,19 @@ func (s *Store) migrateSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_invite_keys_tenant_id ON invite_keys(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_invite_keys_hash ON invite_keys(hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_invite_keys_created_at ON invite_keys(created_at)`,
+		`CREATE TABLE IF NOT EXISTS invite_key_bindings (
+			tenant_id TEXT NOT NULL,
+			key_id TEXT NOT NULL,
+			email TEXT NOT NULL,
+			first_used_at INTEGER NOT NULL,
+			last_used_at INTEGER NOT NULL,
+			login_count INTEGER NOT NULL DEFAULT 1,
+			PRIMARY KEY(tenant_id, key_id, email),
+			FOREIGN KEY(key_id) REFERENCES invite_keys(id) ON DELETE CASCADE,
+			FOREIGN KEY(email) REFERENCES users(email)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_invite_key_bindings_key ON invite_key_bindings(tenant_id, key_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_invite_key_bindings_email ON invite_key_bindings(email)`,
 		`CREATE TABLE IF NOT EXISTS auth_codes (
 			hash TEXT PRIMARY KEY,
 			tenant_id TEXT NOT NULL DEFAULT '',
@@ -260,6 +294,8 @@ func (s *Store) migrateSchema() error {
 		def    string
 	}{
 		{"invite_keys", "tenant_id", "TEXT NOT NULL DEFAULT ''"},
+		{"invite_keys", "plain_key", "TEXT NOT NULL DEFAULT ''"},
+		{"invite_keys", "max_uses", "INTEGER NOT NULL DEFAULT 1"},
 		{"auth_codes", "tenant_id", "TEXT NOT NULL DEFAULT ''"},
 		{"access_tokens", "tenant_id", "TEXT NOT NULL DEFAULT ''"},
 	} {
@@ -522,12 +558,18 @@ func importLegacyData(tx *sql.Tx, data StoreData) error {
 		if k.ID == "" || k.Hash == "" {
 			continue
 		}
+		maxUses := k.MaxUses
+		if maxUses <= 0 {
+			maxUses = 1
+		}
 		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO invite_keys(id, hash, bound_email, created_at, expires_at, used_at, revoked_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT OR IGNORE INTO invite_keys(id, plain_key, hash, bound_email, max_uses, created_at, expires_at, used_at, revoked_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			k.ID,
+			strings.TrimSpace(k.PlainKey),
 			k.Hash,
 			normalizeEmail(k.BoundEmail),
+			maxUses,
 			timeToDB(k.CreatedAt),
 			nullableTimeToDB(k.ExpiresAt),
 			nullableTimeToDB(k.UsedAt),
@@ -583,15 +625,23 @@ func importLegacyData(tx *sql.Tx, data StoreData) error {
 }
 
 func (s *Store) GenerateKeys(tenantID string, count int, boundEmails []string, expiresAt *time.Time) ([]GeneratedKey, error) {
+	return s.GenerateKeysWithMaxUses(tenantID, count, boundEmails, expiresAt, 1)
+}
+
+func (s *Store) GenerateKeysWithMaxUses(tenantID string, count int, boundEmails []string, expiresAt *time.Time, maxUses int) ([]GeneratedKey, error) {
 	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant is required")
+	}
+	if maxUses <= 0 {
+		maxUses = 1
 	}
 	if count <= 0 {
 		count = 1
 	}
 	if len(boundEmails) > 0 {
 		count = len(boundEmails)
+		maxUses = 1
 	}
 	if count > 1000 {
 		return nil, fmt.Errorf("count is too large")
@@ -617,12 +667,14 @@ func (s *Store) GenerateKeys(tenantID string, count int, boundEmails []string, e
 			bound = normalizeEmail(boundEmails[i])
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO invite_keys(id, tenant_id, hash, bound_email, created_at, expires_at)
-				VALUES (?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO invite_keys(id, tenant_id, plain_key, hash, bound_email, max_uses, created_at, expires_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			id,
 			tenantID,
+			key,
 			hashToken(key),
 			bound,
+			maxUses,
 			timeToDB(now),
 			nullableTimeToDB(expiresAt),
 		); err != nil {
@@ -632,6 +684,7 @@ func (s *Store) GenerateKeys(tenantID string, count int, boundEmails []string, e
 			ID:         id,
 			Key:        key,
 			BoundEmail: bound,
+			MaxUses:    maxUses,
 			ExpiresAt:  expiresAt,
 		})
 	}
@@ -658,6 +711,113 @@ func (s *Store) RevokeKey(tenantID string, id string) error {
 	return err
 }
 
+func (s *Store) RestoreKey(tenantID string, id string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	id = strings.TrimSpace(id)
+	if tenantID == "" || id == "" {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`UPDATE invite_keys
+			SET revoked_at = NULL
+			WHERE tenant_id = ? AND id = ?`,
+		tenantID,
+		id,
+	)
+	return err
+}
+
+func (s *Store) DeleteKey(tenantID string, id string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	id = strings.TrimSpace(id)
+	if tenantID == "" || id == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`DELETE FROM invite_keys WHERE tenant_id = ? AND id = ?`, tenantID, id)
+	return err
+}
+
+func (s *Store) SaveInviteKey(input InviteKeyInput) error {
+	input.TenantID = strings.TrimSpace(input.TenantID)
+	input.ID = strings.TrimSpace(input.ID)
+	input.Key = strings.TrimSpace(input.Key)
+	input.BoundEmail = normalizeEmail(input.BoundEmail)
+	if input.TenantID == "" {
+		return fmt.Errorf("tenant is required")
+	}
+	if input.MaxUses <= 0 {
+		input.MaxUses = 1
+	}
+	if input.BoundEmail != "" {
+		input.MaxUses = 1
+	}
+
+	now := time.Now().UTC()
+	if input.ID == "" {
+		if input.Key == "" {
+			input.Key = randomToken(32)
+		}
+		_, err := s.db.Exec(
+			`INSERT INTO invite_keys(id, tenant_id, plain_key, hash, bound_email, max_uses, created_at, expires_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			randomToken(9),
+			input.TenantID,
+			input.Key,
+			hashToken(input.Key),
+			input.BoundEmail,
+			input.MaxUses,
+			timeToDB(now),
+			nullableTimeToDB(input.ExpiresAt),
+		)
+		return err
+	}
+
+	var plainKey, hash string
+	err := s.db.QueryRow(
+		`SELECT plain_key, hash FROM invite_keys WHERE tenant_id = ? AND id = ?`,
+		input.TenantID,
+		input.ID,
+	).Scan(&plainKey, &hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		if input.Key == "" {
+			input.Key = randomToken(32)
+		}
+		_, err = s.db.Exec(
+			`INSERT INTO invite_keys(id, tenant_id, plain_key, hash, bound_email, max_uses, created_at, expires_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			input.ID,
+			input.TenantID,
+			input.Key,
+			hashToken(input.Key),
+			input.BoundEmail,
+			input.MaxUses,
+			timeToDB(now),
+			nullableTimeToDB(input.ExpiresAt),
+		)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if input.Key != "" {
+		plainKey = input.Key
+		hash = hashToken(input.Key)
+	}
+	_, err = s.db.Exec(
+		`UPDATE invite_keys
+			SET plain_key = ?, hash = ?, bound_email = ?, max_uses = ?, expires_at = ?
+			WHERE tenant_id = ? AND id = ?`,
+		plainKey,
+		hash,
+		input.BoundEmail,
+		input.MaxUses,
+		nullableTimeToDB(input.ExpiresAt),
+		input.TenantID,
+		input.ID,
+	)
+	return err
+}
+
 func (s *Store) UseInviteKey(tenantID string, email string, key string, allowedDomains string) (User, error) {
 	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "" {
@@ -670,6 +830,7 @@ func (s *Store) UseInviteKey(tenantID string, email string, key string, allowedD
 	if _, err := mail.ParseAddress(email); err != nil {
 		return User{}, ErrInvalidEmailDomain
 	}
+	keyHash := hashToken(strings.TrimSpace(key))
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -678,34 +839,108 @@ func (s *Store) UseInviteKey(tenantID string, email string, key string, allowedD
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
-	result, err := tx.Exec(
-		`UPDATE invite_keys
-			SET used_at = ?
-			WHERE tenant_id = ?
-				AND hash = ?
-				AND used_at IS NULL
-				AND revoked_at IS NULL
-				AND (expires_at IS NULL OR expires_at > ?)
-				AND (bound_email = '' OR bound_email = ?)`,
-		timeToDB(now),
-		tenantID,
-		hashToken(strings.TrimSpace(key)),
-		timeToDB(now),
-		email,
+	var (
+		keyID      string
+		boundEmail string
+		maxUses    int
+		expiresNS  sql.NullInt64
+		usedNS     sql.NullInt64
+		revokedNS  sql.NullInt64
 	)
+	err = tx.QueryRow(
+		`SELECT id, bound_email, max_uses, expires_at, used_at, revoked_at
+			FROM invite_keys
+			WHERE tenant_id = ? AND hash = ?`,
+		tenantID,
+		keyHash,
+	).Scan(&keyID, &boundEmail, &maxUses, &expiresNS, &usedNS, &revokedNS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrInvalidInviteKey
+	}
 	if err != nil {
 		return User{}, err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return User{}, err
+	if maxUses <= 0 {
+		maxUses = 1
 	}
-	if affected != 1 {
+	if revokedNS.Valid || (expiresNS.Valid && !now.Before(timeFromDB(expiresNS.Int64))) {
+		return User{}, ErrInvalidInviteKey
+	}
+	if boundEmail != "" && boundEmail != email {
 		return User{}, ErrInvalidInviteKey
 	}
 
 	user, err := ensureUserTx(tx, email, now)
 	if err != nil {
+		return User{}, err
+	}
+
+	var loginCount int
+	err = tx.QueryRow(
+		`SELECT login_count
+			FROM invite_key_bindings
+			WHERE tenant_id = ? AND key_id = ? AND email = ?`,
+		tenantID,
+		keyID,
+		email,
+	).Scan(&loginCount)
+	if err == nil {
+		if _, err := tx.Exec(
+			`UPDATE invite_key_bindings
+				SET last_used_at = ?, login_count = login_count + 1
+				WHERE tenant_id = ? AND key_id = ? AND email = ?`,
+			timeToDB(now),
+			tenantID,
+			keyID,
+			email,
+		); err != nil {
+			return User{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return User{}, err
+		}
+		return user, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return User{}, err
+	}
+
+	var usedCount int
+	if err := tx.QueryRow(
+		`SELECT COUNT(*) FROM invite_key_bindings WHERE tenant_id = ? AND key_id = ?`,
+		tenantID,
+		keyID,
+	).Scan(&usedCount); err != nil {
+		return User{}, err
+	}
+	if usedNS.Valid && boundEmail == "" && usedCount == 0 {
+		return User{}, ErrInvalidInviteKey
+	}
+	if usedCount >= maxUses {
+		return User{}, ErrInvalidInviteKey
+	}
+
+	if _, err := tx.Exec(
+		`INSERT INTO invite_key_bindings(tenant_id, key_id, email, first_used_at, last_used_at, login_count)
+			VALUES (?, ?, ?, ?, ?, 1)`,
+		tenantID,
+		keyID,
+		email,
+		timeToDB(now),
+		timeToDB(now),
+	); err != nil {
+		return User{}, err
+	}
+	if _, err := tx.Exec(
+		`UPDATE invite_keys
+			SET used_at = COALESCE(used_at, ?),
+				bound_email = CASE WHEN bound_email = '' AND max_uses <= 1 THEN ? ELSE bound_email END
+			WHERE tenant_id = ? AND id = ?`,
+		timeToDB(now),
+		email,
+		tenantID,
+		keyID,
+	); err != nil {
 		return User{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -876,10 +1111,28 @@ func (s *Store) LookupAccessToken(tenantID, token string) (User, error) {
 
 func (s *Store) KeyViews(tenantID string) []KeyView {
 	rows, err := s.db.Query(
-		`SELECT id, bound_email, created_at, expires_at, used_at, revoked_at
-			FROM invite_keys
-			WHERE tenant_id = ?
-			ORDER BY created_at DESC, rowid DESC`,
+		`SELECT
+				k.id,
+				k.plain_key,
+				k.bound_email,
+				k.max_uses,
+				k.created_at,
+				k.expires_at,
+				k.used_at,
+				k.revoked_at,
+				COALESCE((
+					SELECT GROUP_CONCAT(email, char(10))
+					FROM (
+						SELECT email
+						FROM invite_key_bindings
+						WHERE tenant_id = k.tenant_id AND key_id = k.id
+						ORDER BY first_used_at
+					)
+				), ''),
+				(SELECT COUNT(*) FROM invite_key_bindings WHERE tenant_id = k.tenant_id AND key_id = k.id)
+			FROM invite_keys AS k
+			WHERE k.tenant_id = ?
+			ORDER BY k.created_at DESC, k.rowid DESC`,
 		strings.TrimSpace(tenantID),
 	)
 	if err != nil {
@@ -891,33 +1144,52 @@ func (s *Store) KeyViews(tenantID string) []KeyView {
 	var views []KeyView
 	for rows.Next() {
 		var (
-			id, boundEmail    string
-			createdAtNS       int64
-			expiresNS         sql.NullInt64
-			usedNS, revokedNS sql.NullInt64
+			id, plainKey       string
+			boundEmail         string
+			bindings           string
+			maxUses, usedCount int
+			createdAtNS        int64
+			expiresNS          sql.NullInt64
+			usedNS, revokedNS  sql.NullInt64
 		)
-		if err := rows.Scan(&id, &boundEmail, &createdAtNS, &expiresNS, &usedNS, &revokedNS); err != nil {
+		if err := rows.Scan(&id, &plainKey, &boundEmail, &maxUses, &createdAtNS, &expiresNS, &usedNS, &revokedNS, &bindings, &usedCount); err != nil {
 			return nil
 		}
+		if maxUses <= 0 {
+			maxUses = 1
+		}
 		createdAt := timeFromDB(createdAtNS)
-		status := "unused"
+		status := "active"
 		if revokedNS.Valid {
 			status = "revoked"
-		} else if usedNS.Valid {
-			status = "used"
 		} else if expiresNS.Valid && now.After(timeFromDB(expiresNS.Int64)) {
 			status = "expired"
+		} else if usedNS.Valid && boundEmail == "" && usedCount == 0 {
+			status = "legacy used"
+		} else if usedCount >= maxUses {
+			status = "full"
+		} else if usedCount > 0 {
+			status = "in use"
 		}
 		expires := "never"
+		expiresInput := ""
 		if expiresNS.Valid {
-			expires = timeFromDB(expiresNS.Int64).Local().Format("2006-01-02 15:04")
+			expiresAt := timeFromDB(expiresNS.Int64).Local()
+			expires = expiresAt.Format("2006-01-02 15:04")
+			expiresInput = expiresAt.Format("2006-01-02T15:04")
 		}
 		views = append(views, KeyView{
-			ID:         id,
-			BoundEmail: boundEmail,
-			CreatedAt:  createdAt.Local().Format("2006-01-02 15:04"),
-			ExpiresAt:  expires,
-			Status:     status,
+			ID:           id,
+			Key:          plainKey,
+			BoundEmail:   boundEmail,
+			Bindings:     bindings,
+			UsedCount:    usedCount,
+			MaxUses:      maxUses,
+			CreatedAt:    createdAt.Local().Format("2006-01-02 15:04"),
+			ExpiresAt:    expires,
+			ExpiresInput: expiresInput,
+			Status:       status,
+			Revoked:      revokedNS.Valid,
 		})
 	}
 	if err := rows.Err(); err != nil {

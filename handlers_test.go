@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -73,5 +74,30 @@ func TestProfileNamesFromEmail(t *testing.T) {
 	}
 	if family != "" {
 		t.Fatalf("family = %q, want empty string", family)
+	}
+}
+
+func TestLoginEmailFromLocalPartAndDomain(t *testing.T) {
+	req := httptest.NewRequest("POST", "https://oidc.example/login", nil)
+	req.Form = url.Values{
+		"email_local":  {"User.Name"},
+		"email_domain": {"ai90.net"},
+	}
+	got := loginEmailFromRequest(req, Tenant{AllowedDomains: "ai90.net"})
+	if got != "user.name@ai90.net" {
+		t.Fatalf("email = %q, want user.name@ai90.net", got)
+	}
+}
+
+func TestLoginEmailStillAcceptsFullEmail(t *testing.T) {
+	req := httptest.NewRequest("POST", "https://oidc.example/login", nil)
+	req.Form = url.Values{
+		"email":        {"Full@Ai90.Net"},
+		"email_local":  {"ignored"},
+		"email_domain": {"example.com"},
+	}
+	got := loginEmailFromRequest(req, Tenant{AllowedDomains: "ai90.net"})
+	if got != "full@ai90.net" {
+		t.Fatalf("email = %q, want full@ai90.net", got)
 	}
 }
