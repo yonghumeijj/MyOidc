@@ -25,14 +25,30 @@ func newTestStore(t *testing.T) *Store {
 	return store
 }
 
+func newTestTenant(t *testing.T, store *Store) Tenant {
+	t.Helper()
+	tenant, err := store.EnsureSeedTenant(TenantInput{
+		IssuerURL:     "https://sso.example.com",
+		AllowedDomain: "example.com",
+		ClientID:      "openai",
+		ClientSecret:  "test-secret",
+		RedirectURIs:  "https://callback.example",
+	})
+	if err != nil {
+		t.Fatalf("EnsureSeedTenant: %v", err)
+	}
+	return tenant
+}
+
 func TestUseInviteKeyConsumesKeyOnce(t *testing.T) {
 	store := newTestStore(t)
-	generated, err := store.GenerateKeys(1, nil, nil)
+	tenant := newTestTenant(t, store)
+	generated, err := store.GenerateKeys(tenant.ID, 1, nil, nil)
 	if err != nil {
 		t.Fatalf("GenerateKeys: %v", err)
 	}
 
-	user, err := store.UseInviteKey("Person@Example.com", generated[0].Key, "example.com")
+	user, err := store.UseInviteKey(tenant.ID, "Person@Example.com", generated[0].Key, "example.com")
 	if err != nil {
 		t.Fatalf("first UseInviteKey: %v", err)
 	}
@@ -40,68 +56,72 @@ func TestUseInviteKeyConsumesKeyOnce(t *testing.T) {
 		t.Fatalf("user email = %q, want normalized email", user.Email)
 	}
 
-	if _, err := store.UseInviteKey("person@example.com", generated[0].Key, "example.com"); !errors.Is(err, ErrInvalidInviteKey) {
+	if _, err := store.UseInviteKey(tenant.ID, "person@example.com", generated[0].Key, "example.com"); !errors.Is(err, ErrInvalidInviteKey) {
 		t.Fatalf("second UseInviteKey err = %v, want ErrInvalidInviteKey", err)
 	}
 }
 
 func TestUseInviteKeyHonorsBoundEmail(t *testing.T) {
 	store := newTestStore(t)
-	generated, err := store.GenerateKeys(1, []string{"alice@example.com"}, nil)
+	tenant := newTestTenant(t, store)
+	generated, err := store.GenerateKeys(tenant.ID, 1, []string{"alice@example.com"}, nil)
 	if err != nil {
 		t.Fatalf("GenerateKeys: %v", err)
 	}
 
-	if _, err := store.UseInviteKey("bob@example.com", generated[0].Key, "example.com"); !errors.Is(err, ErrInvalidInviteKey) {
+	if _, err := store.UseInviteKey(tenant.ID, "bob@example.com", generated[0].Key, "example.com"); !errors.Is(err, ErrInvalidInviteKey) {
 		t.Fatalf("wrong bound email err = %v, want ErrInvalidInviteKey", err)
 	}
-	if _, err := store.UseInviteKey("alice@example.com", generated[0].Key, "example.com"); err != nil {
+	if _, err := store.UseInviteKey(tenant.ID, "alice@example.com", generated[0].Key, "example.com"); err != nil {
 		t.Fatalf("correct bound email UseInviteKey: %v", err)
 	}
 }
 
 func TestUseInviteKeyRejectsExpiredAndRevokedKeys(t *testing.T) {
 	store := newTestStore(t)
+	tenant := newTestTenant(t, store)
 
 	past := time.Now().UTC().Add(-time.Minute)
-	expired, err := store.GenerateKeys(1, nil, &past)
+	expired, err := store.GenerateKeys(tenant.ID, 1, nil, &past)
 	if err != nil {
 		t.Fatalf("GenerateKeys expired: %v", err)
 	}
-	if _, err := store.UseInviteKey("person@example.com", expired[0].Key, "example.com"); !errors.Is(err, ErrInvalidInviteKey) {
+	if _, err := store.UseInviteKey(tenant.ID, "person@example.com", expired[0].Key, "example.com"); !errors.Is(err, ErrInvalidInviteKey) {
 		t.Fatalf("expired key err = %v, want ErrInvalidInviteKey", err)
 	}
 
-	revoked, err := store.GenerateKeys(1, nil, nil)
+	revoked, err := store.GenerateKeys(tenant.ID, 1, nil, nil)
 	if err != nil {
 		t.Fatalf("GenerateKeys revoked: %v", err)
 	}
-	if err := store.RevokeKey(revoked[0].ID); err != nil {
+	if err := store.RevokeKey(tenant.ID, revoked[0].ID); err != nil {
 		t.Fatalf("RevokeKey: %v", err)
 	}
-	if _, err := store.UseInviteKey("person@example.com", revoked[0].Key, "example.com"); !errors.Is(err, ErrInvalidInviteKey) {
+	if _, err := store.UseInviteKey(tenant.ID, "person@example.com", revoked[0].Key, "example.com"); !errors.Is(err, ErrInvalidInviteKey) {
 		t.Fatalf("revoked key err = %v, want ErrInvalidInviteKey", err)
 	}
 }
 
 func TestConsumeAuthCodeRejectsReuse(t *testing.T) {
 	store := newTestStore(t)
-	code, err := store.CreateAuthCode("person@example.com", "openai", "https://callback.example", "nonce", "openid email")
+	tenant := newTestTenant(t, store)
+	code, err := store.CreateAuthCode(tenant.ID, "person@example.com", "openai", "https://callback.example", "nonce", "openid email")
 	if err != nil {
 		t.Fatalf("CreateAuthCode: %v", err)
 	}
 
-	if _, _, err := store.ConsumeAuthCode(code, "openai", "https://callback.example"); err != nil {
+	if _, _, err := store.ConsumeAuthCode(tenant.ID, code, "openai", "https://callback.example"); err != nil {
 		t.Fatalf("first ConsumeAuthCode: %v", err)
 	}
-	if _, _, err := store.ConsumeAuthCode(code, "openai", "https://callback.example"); !errors.Is(err, ErrInvalidAuthCode) {
+	if _, _, err := store.ConsumeAuthCode(tenant.ID, code, "openai", "https://callback.example"); !errors.Is(err, ErrInvalidAuthCode) {
 		t.Fatalf("second ConsumeAuthCode err = %v, want ErrInvalidAuthCode", err)
 	}
 }
 
 func TestConcurrentInviteKeyUseOnlySucceedsOnce(t *testing.T) {
 	store := newTestStore(t)
-	generated, err := store.GenerateKeys(1, nil, nil)
+	tenant := newTestTenant(t, store)
+	generated, err := store.GenerateKeys(tenant.ID, 1, nil, nil)
 	if err != nil {
 		t.Fatalf("GenerateKeys: %v", err)
 	}
@@ -113,7 +133,7 @@ func TestConcurrentInviteKeyUseOnlySucceedsOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := store.UseInviteKey("person@example.com", generated[0].Key, "example.com")
+			_, err := store.UseInviteKey(tenant.ID, "person@example.com", generated[0].Key, "example.com")
 			switch {
 			case err == nil:
 				atomic.AddInt64(&successes, 1)
@@ -131,6 +151,40 @@ func TestConcurrentInviteKeyUseOnlySucceedsOnce(t *testing.T) {
 	}
 	if invalids != 24 {
 		t.Fatalf("invalids = %d, want 24", invalids)
+	}
+}
+
+func TestTenantIsolation(t *testing.T) {
+	store := newTestStore(t)
+	tenantA := newTestTenant(t, store)
+	tenantB, err := store.SaveTenant(TenantInput{
+		IssuerURL:     "https://sso.other.example",
+		AllowedDomain: "other.example",
+		ClientID:      "openai",
+		ClientSecret:  "other-secret",
+		RedirectURIs:  "https://other-callback.example",
+	})
+	if err != nil {
+		t.Fatalf("SaveTenant: %v", err)
+	}
+
+	generated, err := store.GenerateKeys(tenantA.ID, 1, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateKeys: %v", err)
+	}
+	if _, err := store.UseInviteKey(tenantB.ID, "person@other.example", generated[0].Key, tenantB.AllowedDomain); !errors.Is(err, ErrInvalidInviteKey) {
+		t.Fatalf("tenant B using tenant A key err = %v, want ErrInvalidInviteKey", err)
+	}
+	if _, err := store.UseInviteKey(tenantA.ID, "person@example.com", generated[0].Key, tenantA.AllowedDomain); err != nil {
+		t.Fatalf("tenant A using tenant A key: %v", err)
+	}
+
+	code, err := store.CreateAuthCode(tenantA.ID, "person@example.com", tenantA.ClientID, "https://callback.example", "", "openid")
+	if err != nil {
+		t.Fatalf("CreateAuthCode: %v", err)
+	}
+	if _, _, err := store.ConsumeAuthCode(tenantB.ID, code, tenantB.ClientID, "https://other-callback.example"); !errors.Is(err, ErrInvalidAuthCode) {
+		t.Fatalf("tenant B consuming tenant A code err = %v, want ErrInvalidAuthCode", err)
 	}
 }
 
@@ -160,16 +214,17 @@ func TestLoadStoreMigratesLegacyJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	tenant := newTestTenant(t, store)
 	t.Cleanup(func() {
 		if err := store.db.Close(); err != nil {
 			t.Fatalf("close store: %v", err)
 		}
 	})
 
-	if got := store.KeyViews(); len(got) != 1 || got[0].ID != "legacy-id" {
+	if got := store.KeyViews(tenant.ID); len(got) != 1 || got[0].ID != "legacy-id" {
 		t.Fatalf("KeyViews = %#v, want migrated legacy key", got)
 	}
-	if _, err := store.UseInviteKey("person@example.com", legacyKey, "example.com"); err != nil {
+	if _, err := store.UseInviteKey(tenant.ID, "person@example.com", legacyKey, "example.com"); err != nil {
 		t.Fatalf("UseInviteKey migrated legacy key: %v", err)
 	}
 }

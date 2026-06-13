@@ -141,41 +141,44 @@ func loadOrCreateTextSecret(path string, envValue string, bytes int) (string, bo
 	return secret, true
 }
 
-func (a *App) setSessionCookie(w http.ResponseWriter, email string) {
+func (a *App) setSessionCookie(w http.ResponseWriter, tenant Tenant, email string) {
 	expires := time.Now().UTC().Add(time.Duration(a.cfg.SessionHours) * time.Hour)
-	payload := normalizeEmail(email) + "|" + strconv.FormatInt(expires.Unix(), 10)
+	payload := tenant.ID + "|" + normalizeEmail(email) + "|" + strconv.FormatInt(expires.Unix(), 10)
 	sig := hmacSign(a.cookieSecret, payload)
 	http.SetCookie(w, &http.Cookie{
 		Name:     "gooidc_session",
 		Value:    payload + "|" + sig,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   strings.HasPrefix(a.cfg.Issuer, "https://"),
+		Secure:   strings.HasPrefix(tenant.IssuerURL, "https://"),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  expires,
 	})
 }
 
-func (a *App) readSessionEmail(r *http.Request) (string, bool) {
+func (a *App) readSessionEmail(r *http.Request, tenant Tenant) (string, bool) {
 	cookie, err := r.Cookie("gooidc_session")
 	if err != nil {
 		return "", false
 	}
 	parts := strings.Split(cookie.Value, "|")
-	if len(parts) != 3 {
+	if len(parts) != 4 {
 		return "", false
 	}
-	payload := parts[0] + "|" + parts[1]
+	if parts[0] != tenant.ID {
+		return "", false
+	}
+	payload := parts[0] + "|" + parts[1] + "|" + parts[2]
 	expected := hmacSign(a.cookieSecret, payload)
-	if subtle.ConstantTimeCompare([]byte(expected), []byte(parts[2])) != 1 {
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(parts[3])) != 1 {
 		return "", false
 	}
-	expUnix, err := strconv.ParseInt(parts[1], 10, 64)
+	expUnix, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil || time.Now().UTC().After(time.Unix(expUnix, 0)) {
 		return "", false
 	}
-	email := normalizeEmail(parts[0])
-	if !emailInDomain(email, a.cfg.AllowedDomain) {
+	email := normalizeEmail(parts[1])
+	if !emailInDomain(email, tenant.AllowedDomain) {
 		return "", false
 	}
 	return email, true

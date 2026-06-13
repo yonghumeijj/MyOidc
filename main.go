@@ -10,16 +10,12 @@ import (
 )
 
 type Config struct {
-	Addr            string
-	DataDir         string
-	Issuer          string
-	AllowedDomain   string
-	ClientID        string
-	ClientSecret    string
-	AdminUser       string
-	AdminPassword   string
-	SessionHours    int
-	AllowedRedirect map[string]bool
+	Addr          string
+	DataDir       string
+	AdminUser     string
+	AdminPassword string
+	SessionHours  int
+	SeedTenant    TenantInput
 }
 
 type App struct {
@@ -46,7 +42,7 @@ func main() {
 		log.Printf("generated admin password and saved it to %s", filepath.Join(cfg.DataDir, "admin_password.txt"))
 	}
 
-	cfg.ClientSecret, generated = loadOrCreateTextSecret(
+	cfg.SeedTenant.ClientSecret, generated = loadOrCreateTextSecret(
 		filepath.Join(cfg.DataDir, "oidc_client_secret.txt"),
 		os.Getenv("OIDC_CLIENT_SECRET"),
 		32,
@@ -69,6 +65,11 @@ func main() {
 		log.Fatalf("load store: %v", err)
 	}
 
+	seedTenant, err := store.EnsureSeedTenant(cfg.SeedTenant)
+	if err != nil {
+		log.Fatalf("seed tenant: %v", err)
+	}
+
 	signer, err := LoadOrCreateSigner(filepath.Join(cfg.DataDir, "oidc_private_key.pem"))
 	if err != nil {
 		log.Fatalf("load signing key: %v", err)
@@ -81,8 +82,8 @@ func main() {
 		cookieSecret: []byte(cookieSecretText),
 	}
 
-	if len(cfg.AllowedRedirect) == 0 {
-		log.Printf("WARNING: OIDC_REDIRECT_URIS is empty; any redirect_uri will be accepted")
+	if strings.TrimSpace(seedTenant.RedirectURIs) == "" {
+		log.Printf("WARNING: seed tenant %s has no redirect URIs; any redirect_uri will be accepted for that tenant", seedTenant.IssuerURL)
 	}
 
 	mux := http.NewServeMux()
@@ -90,6 +91,7 @@ func main() {
 	mux.HandleFunc("/admin", app.handleAdmin)
 	mux.HandleFunc("/admin/keys", app.handleAdminKeys)
 	mux.HandleFunc("/admin/revoke", app.handleAdminRevoke)
+	mux.HandleFunc("/admin/tenants", app.handleAdminTenants)
 	mux.HandleFunc("/authorize", app.handleAuthorize)
 	mux.HandleFunc("/login", app.handleLogin)
 	mux.HandleFunc("/token", app.handleToken)
@@ -97,8 +99,8 @@ func main() {
 	mux.HandleFunc("/jwks.json", app.handleJWKS)
 	mux.HandleFunc("/.well-known/openid-configuration", app.handleDiscovery)
 
-	log.Printf("issuer: %s", cfg.Issuer)
-	log.Printf("admin:  %s/admin", cfg.Issuer)
+	log.Printf("seed issuer: %s", seedTenant.IssuerURL)
+	log.Printf("admin:       %s/admin", seedTenant.IssuerURL)
 	log.Printf("listen: %s", cfg.Addr)
 	log.Fatal(http.ListenAndServe(cfg.Addr, securityHeaders(mux)))
 }
@@ -110,14 +112,16 @@ func loadConfig() Config {
 	domain = strings.TrimPrefix(domain, "@")
 
 	return Config{
-		Addr:            env("ADDR", ":8080"),
-		DataDir:         dataDir,
-		Issuer:          issuer,
-		AllowedDomain:   domain,
-		ClientID:        env("OIDC_CLIENT_ID", "openai"),
-		AdminUser:       env("ADMIN_USER", "admin"),
-		SessionHours:    envInt("SESSION_HOURS", 12),
-		AllowedRedirect: parseCSVSet(os.Getenv("OIDC_REDIRECT_URIS")),
+		Addr:         env("ADDR", ":8080"),
+		DataDir:      dataDir,
+		AdminUser:    env("ADMIN_USER", "admin"),
+		SessionHours: envInt("SESSION_HOURS", 12),
+		SeedTenant: TenantInput{
+			IssuerURL:     issuer,
+			AllowedDomain: domain,
+			ClientID:      env("OIDC_CLIENT_ID", "openai"),
+			RedirectURIs:  strings.Join(parseCSVValues(os.Getenv("OIDC_REDIRECT_URIS")), "\n"),
+		},
 	}
 }
 
@@ -141,12 +145,12 @@ func envInt(key string, fallback int) int {
 	return n
 }
 
-func parseCSVSet(raw string) map[string]bool {
-	result := map[string]bool{}
+func parseCSVValues(raw string) []string {
+	var result []string
 	for _, item := range strings.Split(raw, ",") {
 		item = strings.TrimSpace(item)
 		if item != "" {
-			result[item] = true
+			result = append(result, item)
 		}
 	}
 	return result

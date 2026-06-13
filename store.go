@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +70,39 @@ type AccessToken struct {
 	Email     string    `json:"email"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type Tenant struct {
+	ID            string
+	IssuerURL     string
+	Host          string
+	AllowedDomain string
+	ClientID      string
+	ClientSecret  string
+	RedirectURIs  string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+func (t Tenant) RedirectURIList() []string {
+	return parseLines(t.RedirectURIs)
+}
+
+func (t Tenant) RedirectURISet() map[string]bool {
+	result := map[string]bool{}
+	for _, uri := range t.RedirectURIList() {
+		result[uri] = true
+	}
+	return result
+}
+
+type TenantInput struct {
+	ID            string
+	IssuerURL     string
+	AllowedDomain string
+	ClientID      string
+	ClientSecret  string
+	RedirectURIs  string
 }
 
 type GeneratedKey struct {
@@ -141,6 +176,18 @@ func (s *Store) migrateSchema() error {
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS tenants (
+			id TEXT PRIMARY KEY,
+			issuer_url TEXT NOT NULL UNIQUE,
+			host TEXT NOT NULL UNIQUE,
+			allowed_domain TEXT NOT NULL,
+			client_id TEXT NOT NULL,
+			client_secret TEXT NOT NULL,
+			redirect_uris TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tenants_host ON tenants(host)`,
 		`CREATE TABLE IF NOT EXISTS users (
 			email TEXT PRIMARY KEY,
 			sub TEXT NOT NULL UNIQUE,
@@ -148,6 +195,7 @@ func (s *Store) migrateSchema() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS invite_keys (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT '',
 			hash TEXT NOT NULL UNIQUE,
 			bound_email TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL,
@@ -155,10 +203,12 @@ func (s *Store) migrateSchema() error {
 			used_at INTEGER,
 			revoked_at INTEGER
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_invite_keys_tenant_id ON invite_keys(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_invite_keys_hash ON invite_keys(hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_invite_keys_created_at ON invite_keys(created_at)`,
 		`CREATE TABLE IF NOT EXISTS auth_codes (
 			hash TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT '',
 			email TEXT NOT NULL,
 			client_id TEXT NOT NULL,
 			redirect_uri TEXT NOT NULL,
@@ -169,19 +219,22 @@ func (s *Store) migrateSchema() error {
 			used_at INTEGER,
 			FOREIGN KEY(email) REFERENCES users(email)
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_codes_tenant_id ON auth_codes(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_auth_codes_email ON auth_codes(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_auth_codes_expires_at ON auth_codes(expires_at)`,
 		`CREATE TABLE IF NOT EXISTS access_tokens (
 			hash TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT '',
 			email TEXT NOT NULL,
 			created_at INTEGER NOT NULL,
 			expires_at INTEGER NOT NULL,
 			FOREIGN KEY(email) REFERENCES users(email)
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_access_tokens_tenant_id ON access_tokens(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_access_tokens_email ON access_tokens(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_access_tokens_expires_at ON access_tokens(expires_at)`,
 		`INSERT INTO schema_meta(key, value)
-			VALUES ('schema_version', '1')
+			VALUES ('schema_version', '2')
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 	}
 	for _, stmt := range statements {
@@ -189,7 +242,50 @@ func (s *Store) migrateSchema() error {
 			return err
 		}
 	}
+	for _, migration := range []struct {
+		table  string
+		column string
+		def    string
+	}{
+		{"invite_keys", "tenant_id", "TEXT NOT NULL DEFAULT ''"},
+		{"auth_codes", "tenant_id", "TEXT NOT NULL DEFAULT ''"},
+		{"access_tokens", "tenant_id", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := s.ensureColumn(migration.table, migration.column, migration.def); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (s *Store) ensureColumn(table, column, definition string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid      int
+			name     string
+			typ      string
+			notNull  int
+			defaultV any
+			primaryK int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultV, &primaryK); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition)
+	return err
 }
 
 func (s *Store) migrateLegacyJSON(path string) error {
@@ -249,7 +345,7 @@ func (s *Store) migrateLegacyJSON(path string) error {
 }
 
 func (s *Store) isEmpty() (bool, error) {
-	tables := []string{"users", "invite_keys", "auth_codes", "access_tokens"}
+	tables := []string{"tenants", "users", "invite_keys", "auth_codes", "access_tokens"}
 	for _, table := range tables {
 		var count int
 		if err := s.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
@@ -260,6 +356,139 @@ func (s *Store) isEmpty() (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+func (s *Store) EnsureSeedTenant(input TenantInput) (Tenant, error) {
+	tenants, err := s.Tenants()
+	if err != nil {
+		return Tenant{}, err
+	}
+	if len(tenants) > 0 {
+		if err := s.assignUnscopedRows(tenants[0].ID); err != nil {
+			return Tenant{}, err
+		}
+		return tenants[0], nil
+	}
+
+	tenant, err := s.SaveTenant(input)
+	if err != nil {
+		return Tenant{}, err
+	}
+	if err := s.assignUnscopedRows(tenant.ID); err != nil {
+		return Tenant{}, err
+	}
+	return tenant, nil
+}
+
+func (s *Store) SaveTenant(input TenantInput) (Tenant, error) {
+	input, host, err := normalizeTenantInput(input)
+	if err != nil {
+		return Tenant{}, err
+	}
+
+	now := time.Now().UTC()
+	if input.ID == "" {
+		input.ID = "t_" + randomToken(12)
+		_, err = s.db.Exec(
+			`INSERT INTO tenants(id, issuer_url, host, allowed_domain, client_id, client_secret, redirect_uris, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			input.ID,
+			input.IssuerURL,
+			host,
+			input.AllowedDomain,
+			input.ClientID,
+			input.ClientSecret,
+			input.RedirectURIs,
+			timeToDB(now),
+			timeToDB(now),
+		)
+		if err != nil {
+			return Tenant{}, err
+		}
+		return s.TenantByID(input.ID)
+	}
+
+	_, err = s.db.Exec(
+		`UPDATE tenants
+			SET issuer_url = ?, host = ?, allowed_domain = ?, client_id = ?, client_secret = ?, redirect_uris = ?, updated_at = ?
+			WHERE id = ?`,
+		input.IssuerURL,
+		host,
+		input.AllowedDomain,
+		input.ClientID,
+		input.ClientSecret,
+		input.RedirectURIs,
+		timeToDB(now),
+		input.ID,
+	)
+	if err != nil {
+		return Tenant{}, err
+	}
+	return s.TenantByID(input.ID)
+}
+
+func (s *Store) Tenants() ([]Tenant, error) {
+	rows, err := s.db.Query(
+		`SELECT id, issuer_url, host, allowed_domain, client_id, client_secret, redirect_uris, created_at, updated_at
+			FROM tenants
+			ORDER BY created_at ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tenants []Tenant
+	for rows.Next() {
+		tenant, err := scanTenant(rows)
+		if err != nil {
+			return nil, err
+		}
+		tenants = append(tenants, tenant)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tenants, nil
+}
+
+func (s *Store) TenantByID(id string) (Tenant, error) {
+	tenant, err := scanTenant(s.db.QueryRow(
+		`SELECT id, issuer_url, host, allowed_domain, client_id, client_secret, redirect_uris, created_at, updated_at
+			FROM tenants
+			WHERE id = ?`,
+		strings.TrimSpace(id),
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Tenant{}, err
+	}
+	return tenant, err
+}
+
+func (s *Store) TenantByHost(host string) (Tenant, error) {
+	tenant, err := scanTenant(s.db.QueryRow(
+		`SELECT id, issuer_url, host, allowed_domain, client_id, client_secret, redirect_uris, created_at, updated_at
+			FROM tenants
+			WHERE host = ?`,
+		normalizeHost(host),
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Tenant{}, err
+	}
+	return tenant, err
+}
+
+func (s *Store) assignUnscopedRows(tenantID string) error {
+	for _, stmt := range []string{
+		`UPDATE invite_keys SET tenant_id = ? WHERE tenant_id = ''`,
+		`UPDATE auth_codes SET tenant_id = ? WHERE tenant_id = ''`,
+		`UPDATE access_tokens SET tenant_id = ? WHERE tenant_id = ''`,
+	} {
+		if _, err := s.db.Exec(stmt, tenantID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func importLegacyData(tx *sql.Tx, data StoreData) error {
@@ -341,7 +570,11 @@ func importLegacyData(tx *sql.Tx, data StoreData) error {
 	return nil
 }
 
-func (s *Store) GenerateKeys(count int, boundEmails []string, expiresAt *time.Time) ([]GeneratedKey, error) {
+func (s *Store) GenerateKeys(tenantID string, count int, boundEmails []string, expiresAt *time.Time) ([]GeneratedKey, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant is required")
+	}
 	if count <= 0 {
 		count = 1
 	}
@@ -372,9 +605,10 @@ func (s *Store) GenerateKeys(count int, boundEmails []string, expiresAt *time.Ti
 			bound = normalizeEmail(boundEmails[i])
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO invite_keys(id, hash, bound_email, created_at, expires_at)
-				VALUES (?, ?, ?, ?, ?)`,
+			`INSERT INTO invite_keys(id, tenant_id, hash, bound_email, created_at, expires_at)
+				VALUES (?, ?, ?, ?, ?, ?)`,
 			id,
+			tenantID,
 			hashToken(key),
 			bound,
 			timeToDB(now),
@@ -395,22 +629,28 @@ func (s *Store) GenerateKeys(count int, boundEmails []string, expiresAt *time.Ti
 	return generated, nil
 }
 
-func (s *Store) RevokeKey(id string) error {
+func (s *Store) RevokeKey(tenantID string, id string) error {
+	tenantID = strings.TrimSpace(tenantID)
 	id = strings.TrimSpace(id)
-	if id == "" {
+	if tenantID == "" || id == "" {
 		return nil
 	}
 	_, err := s.db.Exec(
 		`UPDATE invite_keys
 			SET revoked_at = COALESCE(revoked_at, ?)
-			WHERE id = ?`,
+			WHERE tenant_id = ? AND id = ?`,
 		timeToDB(time.Now().UTC()),
+		tenantID,
 		id,
 	)
 	return err
 }
 
-func (s *Store) UseInviteKey(email string, key string, allowedDomain string) (User, error) {
+func (s *Store) UseInviteKey(tenantID string, email string, key string, allowedDomain string) (User, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return User{}, ErrInvalidInviteKey
+	}
 	email = normalizeEmail(email)
 	if !emailInDomain(email, allowedDomain) {
 		return User{}, ErrInvalidEmailDomain
@@ -429,12 +669,14 @@ func (s *Store) UseInviteKey(email string, key string, allowedDomain string) (Us
 	result, err := tx.Exec(
 		`UPDATE invite_keys
 			SET used_at = ?
-			WHERE hash = ?
+			WHERE tenant_id = ?
+				AND hash = ?
 				AND used_at IS NULL
 				AND revoked_at IS NULL
 				AND (expires_at IS NULL OR expires_at > ?)
 				AND (bound_email = '' OR bound_email = ?)`,
 		timeToDB(now),
+		tenantID,
 		hashToken(strings.TrimSpace(key)),
 		timeToDB(now),
 		email,
@@ -460,7 +702,11 @@ func (s *Store) UseInviteKey(email string, key string, allowedDomain string) (Us
 	return user, nil
 }
 
-func (s *Store) CreateAuthCode(email, clientID, redirectURI, nonce, scope string) (string, error) {
+func (s *Store) CreateAuthCode(tenantID, email, clientID, redirectURI, nonce, scope string) (string, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return "", fmt.Errorf("tenant is required")
+	}
 	email = normalizeEmail(email)
 	now := time.Now().UTC()
 	code := randomToken(32)
@@ -478,9 +724,10 @@ func (s *Store) CreateAuthCode(email, clientID, redirectURI, nonce, scope string
 		return "", err
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO auth_codes(hash, email, client_id, redirect_uri, nonce, scope, created_at, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO auth_codes(hash, tenant_id, email, client_id, redirect_uri, nonce, scope, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		hashToken(code),
+		tenantID,
 		email,
 		clientID,
 		redirectURI,
@@ -497,7 +744,11 @@ func (s *Store) CreateAuthCode(email, clientID, redirectURI, nonce, scope string
 	return code, nil
 }
 
-func (s *Store) ConsumeAuthCode(code, clientID, redirectURI string) (User, AuthCode, error) {
+func (s *Store) ConsumeAuthCode(tenantID, code, clientID, redirectURI string) (User, AuthCode, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return User{}, AuthCode{}, ErrInvalidAuthCode
+	}
 	now := time.Now().UTC()
 	codeHash := hashToken(strings.TrimSpace(code))
 
@@ -510,12 +761,14 @@ func (s *Store) ConsumeAuthCode(code, clientID, redirectURI string) (User, AuthC
 	result, err := tx.Exec(
 		`UPDATE auth_codes
 			SET used_at = ?
-			WHERE hash = ?
+			WHERE tenant_id = ?
+				AND hash = ?
 				AND used_at IS NULL
 				AND expires_at > ?
 				AND client_id = ?
 				AND redirect_uri = ?`,
 		timeToDB(now),
+		tenantID,
 		codeHash,
 		timeToDB(now),
 		clientID,
@@ -532,7 +785,7 @@ func (s *Store) ConsumeAuthCode(code, clientID, redirectURI string) (User, AuthC
 		return User{}, AuthCode{}, ErrInvalidAuthCode
 	}
 
-	authCode, err := authCodeByHashTx(tx, codeHash)
+	authCode, err := authCodeByHashTx(tx, tenantID, codeHash)
 	if err != nil {
 		return User{}, AuthCode{}, err
 	}
@@ -546,7 +799,11 @@ func (s *Store) ConsumeAuthCode(code, clientID, redirectURI string) (User, AuthC
 	return user, authCode, nil
 }
 
-func (s *Store) CreateAccessToken(email string) (string, error) {
+func (s *Store) CreateAccessToken(tenantID, email string) (string, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return "", fmt.Errorf("tenant is required")
+	}
 	email = normalizeEmail(email)
 	now := time.Now().UTC()
 	token := randomToken(32)
@@ -564,9 +821,10 @@ func (s *Store) CreateAccessToken(email string) (string, error) {
 		return "", err
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO access_tokens(hash, email, created_at, expires_at)
-			VALUES (?, ?, ?, ?)`,
+		`INSERT INTO access_tokens(hash, tenant_id, email, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?)`,
 		hashToken(token),
+		tenantID,
 		email,
 		timeToDB(now),
 		timeToDB(now.Add(time.Hour)),
@@ -579,13 +837,18 @@ func (s *Store) CreateAccessToken(email string) (string, error) {
 	return token, nil
 }
 
-func (s *Store) LookupAccessToken(token string) (User, error) {
+func (s *Store) LookupAccessToken(tenantID, token string) (User, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return User{}, ErrInvalidAccessToken
+	}
 	now := time.Now().UTC()
 	row := s.db.QueryRow(
 		`SELECT u.email, u.sub, u.created_at
 			FROM access_tokens AS at
 			JOIN users AS u ON u.email = at.email
-			WHERE at.hash = ? AND at.expires_at > ?`,
+			WHERE at.tenant_id = ? AND at.hash = ? AND at.expires_at > ?`,
+		tenantID,
 		hashToken(strings.TrimSpace(token)),
 		timeToDB(now),
 	)
@@ -599,11 +862,13 @@ func (s *Store) LookupAccessToken(token string) (User, error) {
 	return user, nil
 }
 
-func (s *Store) KeyViews() []KeyView {
+func (s *Store) KeyViews(tenantID string) []KeyView {
 	rows, err := s.db.Query(
 		`SELECT id, bound_email, created_at, expires_at, used_at, revoked_at
 			FROM invite_keys
+			WHERE tenant_id = ?
 			ORDER BY created_at DESC, rowid DESC`,
+		strings.TrimSpace(tenantID),
 	)
 	if err != nil {
 		return nil
@@ -699,11 +964,34 @@ func scanUser(row scanner) (User, error) {
 	return user, nil
 }
 
+func scanTenant(row scanner) (Tenant, error) {
+	var (
+		tenant               Tenant
+		createdNS, updatedNS int64
+	)
+	if err := row.Scan(
+		&tenant.ID,
+		&tenant.IssuerURL,
+		&tenant.Host,
+		&tenant.AllowedDomain,
+		&tenant.ClientID,
+		&tenant.ClientSecret,
+		&tenant.RedirectURIs,
+		&createdNS,
+		&updatedNS,
+	); err != nil {
+		return Tenant{}, err
+	}
+	tenant.CreatedAt = timeFromDB(createdNS)
+	tenant.UpdatedAt = timeFromDB(updatedNS)
+	return tenant, nil
+}
+
 func userByEmailTx(tx *sql.Tx, email string) (User, error) {
 	return scanUser(tx.QueryRow(`SELECT email, sub, created_at FROM users WHERE email = ?`, normalizeEmail(email)))
 }
 
-func authCodeByHashTx(tx *sql.Tx, hash string) (AuthCode, error) {
+func authCodeByHashTx(tx *sql.Tx, tenantID, hash string) (AuthCode, error) {
 	var (
 		code      AuthCode
 		createdNS int64
@@ -713,7 +1001,8 @@ func authCodeByHashTx(tx *sql.Tx, hash string) (AuthCode, error) {
 	err := tx.QueryRow(
 		`SELECT hash, email, client_id, redirect_uri, nonce, scope, created_at, expires_at, used_at
 			FROM auth_codes
-			WHERE hash = ?`,
+			WHERE tenant_id = ? AND hash = ?`,
+		tenantID,
 		hash,
 	).Scan(
 		&code.Hash,
@@ -758,8 +1047,59 @@ func nullableTimeFromDB(ns sql.NullInt64) *time.Time {
 	return &t
 }
 
+func normalizeTenantInput(input TenantInput) (TenantInput, string, error) {
+	input.ID = strings.TrimSpace(input.ID)
+	input.IssuerURL = strings.TrimRight(strings.TrimSpace(input.IssuerURL), "/")
+	input.AllowedDomain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(input.AllowedDomain)), "@")
+	input.ClientID = strings.TrimSpace(input.ClientID)
+	input.ClientSecret = strings.TrimSpace(input.ClientSecret)
+	if input.ClientSecret == "" {
+		input.ClientSecret = randomToken(32)
+	}
+	input.RedirectURIs = strings.Join(parseLines(input.RedirectURIs), "\n")
+
+	if input.IssuerURL == "" {
+		return TenantInput{}, "", fmt.Errorf("issuer URL is required")
+	}
+	parsed, err := url.Parse(input.IssuerURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return TenantInput{}, "", fmt.Errorf("issuer URL must include scheme and host")
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return TenantInput{}, "", fmt.Errorf("issuer URL scheme must be http or https")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return TenantInput{}, "", fmt.Errorf("issuer URL must not include query or fragment")
+	}
+	host := normalizeHost(parsed.Host)
+	if host == "" {
+		return TenantInput{}, "", fmt.Errorf("issuer URL host is required")
+	}
+	if input.AllowedDomain == "" {
+		return TenantInput{}, "", fmt.Errorf("allowed domain is required")
+	}
+	if input.ClientID == "" {
+		return TenantInput{}, "", fmt.Errorf("client ID is required")
+	}
+	input.IssuerURL = parsed.Scheme + "://" + host + strings.TrimRight(parsed.EscapedPath(), "/")
+	return input, host, nil
+}
+
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func normalizeHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimSuffix(host, ".")
+	if h, port, err := net.SplitHostPort(host); err == nil {
+		h = strings.TrimSuffix(strings.ToLower(strings.Trim(h, "[]")), ".")
+		if port == "80" || port == "443" {
+			return h
+		}
+		return h + ":" + port
+	}
+	return host
 }
 
 func emailInDomain(email string, domain string) bool {

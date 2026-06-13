@@ -6,7 +6,7 @@ This is a small self-hosted OpenID Connect provider for one narrow use case:
 
 - The administrator generates one-time login keys.
 - A user signs in with `email + one-time key`.
-- The email must belong to `ALLOWED_DOMAIN`, for example `@abc.com`.
+- The email must belong to the selected tenant's allowed domain, for example `@abc.com`.
 - The service issues OIDC tokens so OpenAI / ChatGPT Business can use it as a Custom OIDC SSO provider.
 
 This project is intentionally lightweight. It is not a full identity platform like authentik,
@@ -23,9 +23,9 @@ Runtime:
 
 Important files:
 
-- `main.go`: service startup, environment config, secret generation, route registration
-- `handlers.go`: admin routes, login flow, OIDC endpoints
-- `store.go`: key/user/auth-code/access-token storage and one-time key consumption
+- `main.go`: service startup, bootstrap environment config, secret generation, route registration
+- `handlers.go`: admin routes, tenant management, login flow, OIDC endpoints
+- `store.go`: tenant/key/user/auth-code/access-token storage and one-time key consumption
 - `crypto.go`: RSA signing key, JWKS, JWT signing, session cookie HMAC
 - `templates.go`: embedded HTML templates for `/admin` and `/login`
 - `Dockerfile`: container build
@@ -50,6 +50,9 @@ The supported flow is authorization code flow:
 OpenAI -> /authorize -> /login -> redirect with code -> /token -> id_token
 ```
 
+Requests are routed by HTTP `Host` to a configured tenant. Each tenant has its own issuer URL,
+allowed email domain, OIDC client ID, client secret, and redirect URI allow-list.
+
 Token endpoint client authentication supports:
 
 - `client_secret_basic`
@@ -69,6 +72,7 @@ If an older `DATA_DIR/store.json` exists and `store.db` is empty, it is imported
 
 Stored entities:
 
+- OIDC tenants
 - one-time invite keys
 - users
 - authorization codes
@@ -95,7 +99,8 @@ Security behavior:
 - A key can be revoked.
 - A key can expire.
 - A key can optionally be bound to a specific email.
-- If a key is not bound to an email, whoever holds it can choose any email in `ALLOWED_DOMAIN`.
+- If a key is not bound to an email, whoever holds it can choose any email in the selected tenant's allowed domain.
+- Invite keys, authorization codes, access tokens, and sessions are scoped to one tenant.
 
 Current behavior is "one-time login key", not "one-time registration key".
 
@@ -105,7 +110,7 @@ second factor such as password, passkey, or email verification.
 
 ## Environment Variables
 
-Required or strongly recommended in production:
+Required or strongly recommended in production for first-run tenant seeding:
 
 ```text
 ISSUER_URL=https://sso.example.com
@@ -123,6 +128,10 @@ ADDR=:8080
 
 `OIDC_REDIRECT_URIS` should be configured. If empty, the service accepts any redirect URI,
 which is not recommended for production.
+
+These OIDC variables seed the first tenant when the SQLite database has no tenants. After that,
+tenants are managed in `/admin`. Multiple public issuer domains can point to the same container
+as long as the reverse proxy preserves the original `Host` header.
 
 ## Docker
 
@@ -166,7 +175,7 @@ go build ./...
 gofmt -w .
 ```
 
-There are currently no dedicated tests. For non-trivial changes, add focused tests around:
+There are focused store tests. For non-trivial changes, add or update focused tests around:
 
 - one-time key consumption
 - bound email behavior
@@ -189,7 +198,7 @@ Do not weaken these behaviors without explicitly calling out the risk:
 
 ## Known Limitations
 
-- Single OIDC client design.
+- Multiple OIDC tenants are supported, selected by request `Host`.
 - No SCIM/user directory sync.
 - No admin audit log.
 - No email verification.
@@ -211,4 +220,6 @@ When changing this project:
 - Preserve Docker volume compatibility for `/data`.
 - Avoid breaking the existing SQLite schema; add migrations where needed.
 - Preserve one-time migration compatibility for legacy `store.json` where practical.
+- Keep tenant-scoped state tenant-scoped; do not let one tenant's unbound key, auth code,
+  access token, or session authenticate against another tenant.
 - Update `README.md` when changing environment variables or deployment behavior.
