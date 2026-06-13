@@ -26,8 +26,10 @@ type AdminPageData struct {
 	Tenants   []Tenant
 	Tenant    Tenant
 	Origin    string
+	ActiveTab string
 	Generated []GeneratedKey
 	Keys      []KeyView
+	KeyPage   KeyListPage
 	Error     string
 	Notice    string
 }
@@ -68,7 +70,7 @@ func (a *App) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		a.renderAdmin(w, r, nil, "invalid form")
+		a.renderAdmin(w, r, nil, "表单无效")
 		return
 	}
 
@@ -97,7 +99,7 @@ func (a *App) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 	for i, email := range boundEmails {
 		email = normalizeEmail(email)
 		if !emailInDomains(email, tenant.AllowedDomains) {
-			a.renderAdmin(w, r, nil, fmt.Sprintf("bound email must match one of %s: %s", allowedDomainsLabel(tenant), email))
+			a.renderAdmin(w, r, nil, fmt.Sprintf("指定邮箱必须属于 %s：%s", allowedDomainsLabel(tenant), email))
 			return
 		}
 		boundEmails[i] = email
@@ -108,7 +110,7 @@ func (a *App) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 		a.renderAdmin(w, r, nil, err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenant.ID)+"&notice=keys_created", http.StatusFound)
+	http.Redirect(w, r, adminPath(tenant.ID, "keys", "keys_created"), http.StatusFound)
 }
 
 func (a *App) handleAdminRevoke(w http.ResponseWriter, r *http.Request) {
@@ -120,7 +122,7 @@ func (a *App) handleAdminRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		a.renderAdmin(w, r, nil, "invalid form")
+		a.renderAdmin(w, r, nil, "表单无效")
 		return
 	}
 	tenantID := strings.TrimSpace(r.FormValue("tenant_id"))
@@ -128,7 +130,7 @@ func (a *App) handleAdminRevoke(w http.ResponseWriter, r *http.Request) {
 		a.renderAdmin(w, r, nil, err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenantID), http.StatusFound)
+	http.Redirect(w, r, adminPath(tenantID, "keys", "key_revoked"), http.StatusFound)
 }
 
 func (a *App) handleAdminRestore(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +142,7 @@ func (a *App) handleAdminRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		a.renderAdmin(w, r, nil, "invalid form")
+		a.renderAdmin(w, r, nil, "表单无效")
 		return
 	}
 	tenantID := strings.TrimSpace(r.FormValue("tenant_id"))
@@ -148,7 +150,7 @@ func (a *App) handleAdminRestore(w http.ResponseWriter, r *http.Request) {
 		a.renderAdmin(w, r, nil, err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenantID)+"&notice=key_restored", http.StatusFound)
+	http.Redirect(w, r, adminPath(tenantID, "keys", "key_restored"), http.StatusFound)
 }
 
 func (a *App) handleAdminKeySave(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +162,7 @@ func (a *App) handleAdminKeySave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		a.renderAdmin(w, r, nil, "invalid form")
+		a.renderAdmin(w, r, nil, "表单无效")
 		return
 	}
 	tenant, err := a.adminTenantFromRequest(r)
@@ -170,7 +172,7 @@ func (a *App) handleAdminKeySave(w http.ResponseWriter, r *http.Request) {
 	}
 	boundEmail := normalizeEmail(r.FormValue("bound_email"))
 	if boundEmail != "" && !emailInDomains(boundEmail, tenant.AllowedDomains) {
-		a.renderAdmin(w, r, nil, fmt.Sprintf("bound email must match one of %s: %s", allowedDomainsLabel(tenant), boundEmail))
+		a.renderAdmin(w, r, nil, fmt.Sprintf("限定邮箱必须属于 %s：%s", allowedDomainsLabel(tenant), boundEmail))
 		return
 	}
 	maxUses, _ := strconv.Atoi(r.FormValue("max_uses"))
@@ -190,10 +192,10 @@ func (a *App) handleAdminKeySave(w http.ResponseWriter, r *http.Request) {
 		MaxUses:    maxUses,
 		ExpiresAt:  expiresAt,
 	}); err != nil {
-		a.renderAdmin(w, r, nil, "save key failed: "+err.Error())
+		a.renderAdmin(w, r, nil, "保存卡密失败："+err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenant.ID)+"&notice=key_saved", http.StatusFound)
+	http.Redirect(w, r, adminPath(tenant.ID, "keys", "key_saved"), http.StatusFound)
 }
 
 func (a *App) handleAdminKeyDelete(w http.ResponseWriter, r *http.Request) {
@@ -205,15 +207,51 @@ func (a *App) handleAdminKeyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		a.renderAdmin(w, r, nil, "invalid form")
+		a.renderAdmin(w, r, nil, "表单无效")
 		return
 	}
 	tenantID := strings.TrimSpace(r.FormValue("tenant_id"))
 	if err := a.store.DeleteKey(tenantID, r.FormValue("id")); err != nil {
-		a.renderAdmin(w, r, nil, "delete key failed: "+err.Error())
+		a.renderAdmin(w, r, nil, "删除卡密失败："+err.Error())
 		return
 	}
-	http.Redirect(w, r, "/admin?tenant="+url.QueryEscape(tenantID)+"&notice=key_deleted", http.StatusFound)
+	http.Redirect(w, r, adminPath(tenantID, "keys", "key_deleted"), http.StatusFound)
+}
+
+func (a *App) handleAdminKeyBatch(w http.ResponseWriter, r *http.Request) {
+	if !a.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderAdmin(w, r, nil, "表单无效")
+		return
+	}
+	tenantID := strings.TrimSpace(r.FormValue("tenant_id"))
+	ids := r.Form["ids"]
+	if len(normalizeIDList(ids)) == 0 {
+		http.Redirect(w, r, adminPath(tenantID, "keys", "keys_none_selected"), http.StatusFound)
+		return
+	}
+	switch r.FormValue("action") {
+	case "revoke":
+		if err := a.store.RevokeKeys(tenantID, ids); err != nil {
+			a.renderAdmin(w, r, nil, "批量禁用失败："+err.Error())
+			return
+		}
+		http.Redirect(w, r, adminPath(tenantID, "keys", "keys_revoked"), http.StatusFound)
+	case "delete":
+		if err := a.store.DeleteKeys(tenantID, ids); err != nil {
+			a.renderAdmin(w, r, nil, "批量删除失败："+err.Error())
+			return
+		}
+		http.Redirect(w, r, adminPath(tenantID, "keys", "keys_deleted"), http.StatusFound)
+	default:
+		a.renderAdmin(w, r, nil, "批量操作无效")
+	}
 }
 
 func (a *App) handleAdminTenants(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +263,7 @@ func (a *App) handleAdminTenants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		a.renderAdmin(w, r, nil, "invalid form")
+		a.renderAdmin(w, r, nil, "表单无效")
 		return
 	}
 
@@ -253,21 +291,21 @@ func (a *App) handleAdminPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		a.renderAdmin(w, r, nil, "invalid form")
+		a.renderAdmin(w, r, nil, "表单无效")
 		return
 	}
 	password := strings.TrimSpace(r.FormValue("new_password"))
 	confirm := strings.TrimSpace(r.FormValue("confirm_password"))
 	if len(password) < 12 {
-		a.renderAdmin(w, r, nil, "admin password must be at least 12 characters")
+		a.renderAdmin(w, r, nil, "管理员密码至少需要 12 个字符")
 		return
 	}
 	if password != confirm {
-		a.renderAdmin(w, r, nil, "admin password confirmation does not match")
+		a.renderAdmin(w, r, nil, "两次输入的管理员密码不一致")
 		return
 	}
 	if err := saveTextSecret(a.cfg.AdminPassPath, password); err != nil {
-		a.renderAdmin(w, r, nil, "save admin password failed: "+err.Error())
+		a.renderAdmin(w, r, nil, "保存管理员密码失败："+err.Error())
 		return
 	}
 	a.setAdminPassword(password)
@@ -727,16 +765,17 @@ func (a *App) adminTenantFromRequest(r *http.Request) (Tenant, error) {
 		return Tenant{}, err
 	}
 	if len(tenants) == 0 {
-		return Tenant{}, fmt.Errorf("no tenants configured")
+		return Tenant{}, fmt.Errorf("尚未配置租户")
 	}
 	return tenants[0], nil
 }
 
 func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, generated []GeneratedKey, errText string) {
 	noticeText := adminNotice(r)
+	activeTab := adminTab(r)
 	tenants, err := a.store.Tenants()
 	if err != nil {
-		http.Error(w, "load tenants failed", http.StatusInternalServerError)
+		http.Error(w, "加载租户失败", http.StatusInternalServerError)
 		return
 	}
 	var tenant Tenant
@@ -762,13 +801,22 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, generated []Ge
 			tenants, _ = a.store.Tenants()
 		}
 	}
+	var keyPage KeyListPage
+	if tenant.ID != "" {
+		keyPage, err = a.store.KeyListPage(tenant.ID, adminKeyPage(r), adminKeyPageSize(r))
+		if err != nil && errText == "" {
+			errText = "加载卡密失败：" + err.Error()
+		}
+	}
 	data := AdminPageData{
 		AdminUser: a.cfg.AdminUser,
 		Tenants:   tenants,
 		Tenant:    tenant,
 		Origin:    currentOrigin(r),
+		ActiveTab: activeTab,
 		Generated: generated,
-		Keys:      a.store.KeyViews(tenant.ID),
+		Keys:      keyPage.Items,
+		KeyPage:   keyPage,
 		Error:     errText,
 		Notice:    noticeText,
 	}
@@ -861,20 +909,69 @@ func isLocalHost(host string) bool {
 func adminNotice(r *http.Request) string {
 	switch r.URL.Query().Get("notice") {
 	case "tenant_saved":
-		return "Tenant settings saved."
+		return "租户设置已保存。"
 	case "password_saved":
-		return "Admin password updated."
+		return "管理员密码已更新。"
 	case "keys_created":
-		return "Keys created."
+		return "卡密已生成。"
 	case "key_saved":
-		return "Key saved."
+		return "卡密已保存。"
 	case "key_deleted":
-		return "Key deleted."
+		return "卡密已删除。"
+	case "key_revoked":
+		return "卡密已禁用。"
 	case "key_restored":
-		return "Key restored."
+		return "卡密已恢复。"
+	case "keys_revoked":
+		return "已批量禁用选中的卡密。"
+	case "keys_deleted":
+		return "已批量删除选中的卡密。"
+	case "keys_none_selected":
+		return "请先选择要操作的卡密。"
 	default:
 		return ""
 	}
+}
+
+func adminTab(r *http.Request) string {
+	switch r.URL.Query().Get("tab") {
+	case "keys":
+		return "keys"
+	default:
+		return "overview"
+	}
+}
+
+func adminKeyPage(r *http.Request) int {
+	page, _ := strconv.Atoi(r.URL.Query().Get("key_page"))
+	if page < 1 {
+		return 1
+	}
+	return page
+}
+
+func adminKeyPageSize(r *http.Request) int {
+	size, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	switch size {
+	case 10, 20, 50, 100:
+		return size
+	default:
+		return 20
+	}
+}
+
+func adminPath(tenantID string, tab string, notice string) string {
+	q := url.Values{}
+	if strings.TrimSpace(tenantID) != "" {
+		q.Set("tenant", strings.TrimSpace(tenantID))
+	}
+	if tab != "" {
+		q.Set("tab", tab)
+	}
+	if notice != "" {
+		q.Set("notice", notice)
+	}
+	return "/admin?" + q.Encode()
 }
 
 func (a *App) renderLogin(w http.ResponseWriter, tenant Tenant, auth AuthRequest, errText string) {

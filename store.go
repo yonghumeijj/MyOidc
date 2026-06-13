@@ -148,6 +148,21 @@ type KeyView struct {
 	Revoked      bool
 }
 
+type KeyListPage struct {
+	Items      []KeyView
+	Page       int
+	PageSize   int
+	Total      int
+	TotalPages int
+	HasPrev    bool
+	HasNext    bool
+	PrevPage   int
+	NextPage   int
+	Start      int
+	End        int
+	Pages      []int
+}
+
 type InviteKeyInput struct {
 	TenantID   string
 	ID         string
@@ -737,6 +752,52 @@ func (s *Store) DeleteKey(tenantID string, id string) error {
 	return err
 }
 
+func (s *Store) RevokeKeys(tenantID string, ids []string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	ids = normalizeIDList(ids)
+	if tenantID == "" || len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := timeToDB(time.Now().UTC())
+	for _, id := range ids {
+		if _, err := tx.Exec(
+			`UPDATE invite_keys
+				SET revoked_at = COALESCE(revoked_at, ?)
+				WHERE tenant_id = ? AND id = ?`,
+			now,
+			tenantID,
+			id,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DeleteKeys(tenantID string, ids []string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	ids = normalizeIDList(ids)
+	if tenantID == "" || len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM invite_keys WHERE tenant_id = ? AND id = ?`, tenantID, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SaveInviteKey(input InviteKeyInput) error {
 	input.TenantID = strings.TrimSpace(input.TenantID)
 	input.ID = strings.TrimSpace(input.ID)
@@ -1139,7 +1200,99 @@ func (s *Store) KeyViews(tenantID string) []KeyView {
 		return nil
 	}
 	defer rows.Close()
+	views, err := scanKeyRows(rows)
+	if err != nil {
+		return nil
+	}
+	return views
+}
 
+func (s *Store) KeyListPage(tenantID string, page int, pageSize int) (KeyListPage, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if page < 1 {
+		page = 1
+	}
+	switch {
+	case pageSize <= 0:
+		pageSize = 20
+	case pageSize > 100:
+		pageSize = 100
+	}
+
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM invite_keys WHERE tenant_id = ?`, tenantID).Scan(&total); err != nil {
+		return KeyListPage{}, err
+	}
+	totalPages := 1
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	offset := (page - 1) * pageSize
+
+	rows, err := s.db.Query(
+		`SELECT
+				k.id,
+				k.plain_key,
+				k.bound_email,
+				k.max_uses,
+				k.created_at,
+				k.expires_at,
+				k.used_at,
+				k.revoked_at,
+				COALESCE((
+					SELECT GROUP_CONCAT(email, char(10))
+					FROM (
+						SELECT email
+						FROM invite_key_bindings
+						WHERE tenant_id = k.tenant_id AND key_id = k.id
+						ORDER BY first_used_at
+					)
+				), ''),
+				(SELECT COUNT(*) FROM invite_key_bindings WHERE tenant_id = k.tenant_id AND key_id = k.id)
+			FROM invite_keys AS k
+			WHERE k.tenant_id = ?
+			ORDER BY k.created_at DESC, k.rowid DESC
+			LIMIT ? OFFSET ?`,
+		tenantID,
+		pageSize,
+		offset,
+	)
+	if err != nil {
+		return KeyListPage{}, err
+	}
+	defer rows.Close()
+
+	items, err := scanKeyRows(rows)
+	if err != nil {
+		return KeyListPage{}, err
+	}
+
+	start := 0
+	end := 0
+	if total > 0 {
+		start = offset + 1
+		end = offset + len(items)
+	}
+	return KeyListPage{
+		Items:      items,
+		Page:       page,
+		PageSize:   pageSize,
+		Total:      total,
+		TotalPages: totalPages,
+		HasPrev:    page > 1,
+		HasNext:    page < totalPages,
+		PrevPage:   maxInt(1, page-1),
+		NextPage:   minInt(totalPages, page+1),
+		Start:      start,
+		End:        end,
+		Pages:      pageWindow(page, totalPages),
+	}, nil
+}
+
+func scanKeyRows(rows *sql.Rows) ([]KeyView, error) {
 	now := time.Now().UTC()
 	var views []KeyView
 	for rows.Next() {
@@ -1153,25 +1306,25 @@ func (s *Store) KeyViews(tenantID string) []KeyView {
 			usedNS, revokedNS  sql.NullInt64
 		)
 		if err := rows.Scan(&id, &plainKey, &boundEmail, &maxUses, &createdAtNS, &expiresNS, &usedNS, &revokedNS, &bindings, &usedCount); err != nil {
-			return nil
+			return nil, err
 		}
 		if maxUses <= 0 {
 			maxUses = 1
 		}
 		createdAt := timeFromDB(createdAtNS)
-		status := "active"
+		status := "可用"
 		if revokedNS.Valid {
-			status = "revoked"
+			status = "已禁用"
 		} else if expiresNS.Valid && now.After(timeFromDB(expiresNS.Int64)) {
-			status = "expired"
+			status = "已过期"
 		} else if usedNS.Valid && boundEmail == "" && usedCount == 0 {
-			status = "legacy used"
+			status = "历史已用"
 		} else if usedCount >= maxUses {
-			status = "full"
+			status = "已满额"
 		} else if usedCount > 0 {
-			status = "in use"
+			status = "使用中"
 		}
-		expires := "never"
+		expires := "永不过期"
 		expiresInput := ""
 		if expiresNS.Valid {
 			expiresAt := timeFromDB(expiresNS.Int64).Local()
@@ -1193,9 +1346,51 @@ func (s *Store) KeyViews(tenantID string) []KeyView {
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil
+		return nil, err
 	}
-	return views
+	return views, nil
+}
+
+func pageWindow(page int, totalPages int) []int {
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	start := maxInt(1, page-2)
+	end := minInt(totalPages, start+4)
+	start = maxInt(1, end-4)
+	pages := make([]int, 0, end-start+1)
+	for i := start; i <= end; i++ {
+		pages = append(pages, i)
+	}
+	return pages
+}
+
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func normalizeIDList(ids []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func cleanupTx(tx *sql.Tx, now time.Time) error {

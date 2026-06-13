@@ -106,6 +106,26 @@ p { color: var(--muted); line-height: 1.5; margin: 0; }
   font-size: 13px;
   white-space: nowrap;
 }
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.tab-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 14px;
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 3px solid transparent;
+  font-weight: 700;
+}
+.tab-link.active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+}
 .grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -225,11 +245,28 @@ table {
   border-collapse: collapse;
   font-size: 14px;
 }
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.data-table {
+  min-width: 1120px;
+  background: #fff;
+}
 th, td {
   padding: 10px 8px;
   border-bottom: 1px solid var(--line);
   text-align: left;
   vertical-align: top;
+}
+.data-table th {
+  background: #f8fafc;
+  color: #526071;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
 }
 th { color: var(--muted); font-weight: 700; }
 td { overflow-wrap: anywhere; }
@@ -241,6 +278,46 @@ td { overflow-wrap: anywhere; }
   color: #344054;
   font-size: 12px;
 }
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.batch-actions, .pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.toolbar select.compact {
+  width: auto;
+}
+.page-link {
+  display: inline-flex;
+  min-width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: #344054;
+  text-decoration: none;
+  background: #fff;
+}
+.page-link.active {
+  color: #fff;
+  background: var(--brand);
+  border-color: var(--brand);
+}
+.page-link.disabled {
+  color: #98a2b3;
+  pointer-events: none;
+  background: #f8fafc;
+}
+.select-cell { width: 42px; text-align: center; }
 .login {
   min-height: 100vh;
   display: grid;
@@ -271,11 +348,11 @@ td { overflow-wrap: anywhere; }
 const adminHTML = `
 {{define "admin"}}
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Go OIDC Admin</title>
+  <title>gooidc 管理后台</title>
   <style>` + pageCSS + `</style>
 </head>
 <body>
@@ -283,18 +360,18 @@ const adminHTML = `
   <aside class="sidebar">
     <div class="brand">
       <strong>gooidc</strong>
-      <span>OIDC provider</span>
+      <span>OIDC 服务</span>
     </div>
 
     <div class="tenant-list">
-      <div class="side-label">Tenants</div>
+      <div class="side-label">租户</div>
       {{range .Tenants}}
-      <a class="tenant-link {{if eq .ID $.Tenant.ID}}active{{end}}" href="/admin?tenant={{.ID}}">{{.IssuerURL}}</a>
+      <a class="tenant-link {{if eq .ID $.Tenant.ID}}active{{end}}" href="/admin?tenant={{.ID}}&tab={{$.ActiveTab}}">{{.IssuerURL}}</a>
       {{end}}
     </div>
 
     <div class="foot">
-      <div>Admin</div>
+      <div>管理员</div>
       <strong>{{.AdminUser}}</strong>
     </div>
   </aside>
@@ -302,97 +379,69 @@ const adminHTML = `
   <main class="workspace">
     <div class="topbar">
       <div>
-        <h1>OIDC Administration</h1>
+        <h1>OIDC 管理后台</h1>
         <p>{{.Tenant.IssuerURL}}</p>
       </div>
       <div class="pill">{{.Origin}}</div>
     </div>
 
+    <nav class="tabs" aria-label="管理功能">
+      <a class="tab-link {{if eq .ActiveTab "overview"}}active{{end}}" href="/admin?tenant={{.Tenant.ID}}&tab=overview">租户设置</a>
+      <a class="tab-link {{if eq .ActiveTab "keys"}}active{{end}}" href="/admin?tenant={{.Tenant.ID}}&tab=keys">卡密管理</a>
+    </nav>
+
     {{if .Notice}}<div class="notice">{{.Notice}}</div>{{end}}
     {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
 
-    {{if .Generated}}
-    <section class="panel span-12" style="margin-bottom:16px;">
-      <div class="panel-head"><h2>Generated keys</h2></div>
-      <div class="panel-body stack">
-        <div class="notice">New keys remain visible in the key list below.</div>
-        <textarea readonly>{{range .Generated}}{{if .BoundEmail}}{{.BoundEmail}},{{end}}{{.Key}}
-{{end}}</textarea>
-        <table>
-          <thead><tr><th>ID</th><th>Bound email</th><th>Expires</th></tr></thead>
-          <tbody>
-          {{range .Generated}}
-          <tr>
-            <td><code>{{.ID}}</code></td>
-            <td>{{if .BoundEmail}}{{.BoundEmail}}{{else}}Any allowed domain{{end}}</td>
-            <td>{{.ExpiresText}}</td>
-          </tr>
-          {{end}}
-          </tbody>
-        </table>
-      </div>
-    </section>
-    {{end}}
-
+    {{if eq .ActiveTab "overview"}}
     <div class="grid">
       <section class="panel span-7">
-        <div class="panel-head"><h2>Tenant overview</h2></div>
+        <div class="panel-head"><h2>租户概览</h2></div>
         <div class="panel-body">
           {{if .Tenant.ID}}
           <dl>
-            <div class="summary"><dt>Issuer</dt><dd><span class="token">{{.Tenant.IssuerURL}}</span></dd></div>
+            <div class="summary"><dt>签发地址</dt><dd><span class="token">{{.Tenant.IssuerURL}}</span></dd></div>
             <div class="summary"><dt>Discovery</dt><dd><span class="token">{{.Tenant.IssuerURL}}/.well-known/openid-configuration</span></dd></div>
-            <div class="summary"><dt>Host</dt><dd><code>{{.Tenant.Host}}</code></dd></div>
-            <div class="summary"><dt>Allowed domains</dt><dd><pre>{{.Tenant.AllowedDomains}}</pre></dd></div>
+            <div class="summary"><dt>访问 Host</dt><dd><code>{{.Tenant.Host}}</code></dd></div>
+            <div class="summary"><dt>允许邮箱域名</dt><dd><pre>{{.Tenant.AllowedDomains}}</pre></dd></div>
             <div class="summary"><dt>Client ID</dt><dd><code>{{.Tenant.ClientID}}</code></dd></div>
             <div class="summary"><dt>Client Secret</dt><dd><span class="token">{{.Tenant.ClientSecret}}</span></dd></div>
-            <div class="summary"><dt>Redirect URIs</dt><dd><pre>{{if .Tenant.RedirectURIs}}{{.Tenant.RedirectURIs}}{{else}}not configured; all redirect_uri values are accepted{{end}}</pre></dd></div>
+            <div class="summary"><dt>回调地址</dt><dd><pre>{{if .Tenant.RedirectURIs}}{{.Tenant.RedirectURIs}}{{else}}未配置，当前会接受任意 redirect_uri{{end}}</pre></dd></div>
           </dl>
           {{end}}
         </div>
       </section>
 
       <section class="panel span-5">
-        <div class="panel-head"><h2>Generate keys</h2></div>
+        <div class="panel-head"><h2>管理员密码</h2></div>
         <div class="panel-body">
-          <form method="post" action="/admin/keys" class="stack">
+          <form method="post" action="/admin/password" class="stack">
             <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
-            <div class="form-grid">
-              <div>
-                <label>Count</label>
-                <input name="count" type="number" min="1" max="1000" value="10">
-              </div>
-              <div>
-                <label>Expires after hours</label>
-                <input name="expires_hours" type="number" min="0" value="168">
-              </div>
-              <div>
-                <label>Max bound emails</label>
-                <input name="max_uses" type="number" min="1" max="1000" value="1">
-              </div>
-              <div class="full">
-                <label>Optional bound emails</label>
-                <textarea name="bound_emails" placeholder="user1@{{.Tenant.PrimaryAllowedDomain}}
-user2@{{.Tenant.PrimaryAllowedDomain}}"></textarea>
-              </div>
+            <div>
+              <label>新密码</label>
+              <input name="new_password" type="password" autocomplete="new-password" minlength="12" required>
             </div>
-            <div class="actions"><button type="submit">Generate</button><span class="muted">Use 0 for no expiry. Bound emails restrict each generated key to that mailbox.</span></div>
+            <div>
+              <label>确认密码</label>
+              <input name="confirm_password" type="password" autocomplete="new-password" minlength="12" required>
+            </div>
+            <div class="actions"><button type="submit">更新密码</button></div>
           </form>
         </div>
       </section>
 
       <section class="panel span-7">
-        <div class="panel-head"><h2>Edit tenant</h2></div>
+        <div class="panel-head"><h2>编辑租户</h2></div>
         <div class="panel-body">
           <form method="post" action="/admin/tenants" class="stack">
             <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
             <div class="form-grid">
               <div class="full">
-                <label>Issuer URL</label>
+                <label>签发地址</label>
                 <input name="issuer_url" value="{{.Tenant.IssuerURL}}" placeholder="https://sso.example.com" required>
               </div>
               <div class="full">
-                <label>Allowed email domains</label>
+                <label>允许邮箱域名</label>
                 <textarea name="allowed_domains" placeholder="example.com
 xyz.com
 aaa.com" required>{{.Tenant.AllowedDomains}}</textarea>
@@ -406,25 +455,25 @@ aaa.com" required>{{.Tenant.AllowedDomains}}</textarea>
                 <input class="mono" name="client_secret" value="{{.Tenant.ClientSecret}}" required>
               </div>
               <div class="full">
-                <label>Allowed redirect URIs</label>
+                <label>允许回调地址</label>
                 <textarea name="redirect_uris" placeholder="https://callback.example/from/openai">{{.Tenant.RedirectURIs}}</textarea>
               </div>
             </div>
-            <div class="actions"><button type="submit">Save tenant</button></div>
+            <div class="actions"><button type="submit">保存租户</button></div>
           </form>
         </div>
       </section>
 
       <section class="panel span-5">
-        <div class="panel-head"><h2>Add tenant</h2></div>
+        <div class="panel-head"><h2>新增租户</h2></div>
         <div class="panel-body">
           <form method="post" action="/admin/tenants" class="stack">
             <div>
-              <label>Issuer URL</label>
+              <label>签发地址</label>
               <input name="issuer_url" placeholder="https://sso.other-example.com" required>
             </div>
             <div>
-              <label>Allowed email domains</label>
+              <label>允许邮箱域名</label>
               <textarea name="allowed_domains" placeholder="example.com
 xyz.com
 aaa.com" required></textarea>
@@ -435,115 +484,199 @@ aaa.com" required></textarea>
             </div>
             <div>
               <label>Client Secret</label>
-              <input class="mono" name="client_secret" placeholder="leave blank to generate">
+              <input class="mono" name="client_secret" placeholder="留空自动生成">
             </div>
             <div>
-              <label>Allowed redirect URIs</label>
+              <label>允许回调地址</label>
               <textarea name="redirect_uris" placeholder="https://callback.example/from/openai"></textarea>
             </div>
-            <div class="actions"><button type="submit">Add tenant</button></div>
+            <div class="actions"><button type="submit">新增租户</button></div>
+          </form>
+        </div>
+      </section>
+    </div>
+    {{end}}
+
+    {{if eq .ActiveTab "keys"}}
+    <div class="grid">
+      <section class="panel span-5">
+        <div class="panel-head"><h2>批量生成卡密</h2></div>
+        <div class="panel-body">
+          <form method="post" action="/admin/keys" class="stack">
+            <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
+            <div class="form-grid">
+              <div>
+                <label>数量</label>
+                <input name="count" type="number" min="1" max="1000" value="10">
+              </div>
+              <div>
+                <label>有效小时</label>
+                <input name="expires_hours" type="number" min="0" value="168">
+              </div>
+              <div>
+                <label>最大绑定邮箱数</label>
+                <input name="max_uses" type="number" min="1" max="1000" value="1">
+              </div>
+              <div class="full">
+                <label>指定邮箱</label>
+                <textarea name="bound_emails" placeholder="user1@{{.Tenant.PrimaryAllowedDomain}}
+user2@{{.Tenant.PrimaryAllowedDomain}}"></textarea>
+              </div>
+            </div>
+            <div class="actions"><button type="submit">生成卡密</button></div>
           </form>
         </div>
       </section>
 
-      <section class="panel span-5">
-        <div class="panel-head"><h2>Admin password</h2></div>
+      <section class="panel span-7">
+        <div class="panel-head"><h2>新增卡密</h2></div>
         <div class="panel-body">
-          <form method="post" action="/admin/password" class="stack">
+          <form id="key-create" method="post" action="/admin/key/save" class="stack">
             <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
-            <div>
-              <label>New password</label>
-              <input name="new_password" type="password" autocomplete="new-password" minlength="12" required>
+            <div class="form-grid">
+              <div class="full">
+                <label>卡密</label>
+                <input class="mono" name="key" placeholder="留空自动生成">
+              </div>
+              <div>
+                <label>限定邮箱</label>
+                <input name="bound_email" placeholder="可选">
+              </div>
+              <div>
+                <label>最大绑定邮箱数</label>
+                <input name="max_uses" type="number" min="1" max="1000" value="1">
+              </div>
+              <div>
+                <label>过期时间</label>
+                <input name="expires_at" type="datetime-local">
+              </div>
             </div>
-            <div>
-              <label>Confirm password</label>
-              <input name="confirm_password" type="password" autocomplete="new-password" minlength="12" required>
-            </div>
-            <div class="actions"><button type="submit">Update password</button></div>
+            <div class="actions"><button type="submit">新增卡密</button></div>
           </form>
         </div>
       </section>
 
       <section class="panel span-12">
-        <div class="panel-head"><h2>Keys</h2></div>
+        <div class="panel-head">
+          <h2>卡密列表</h2>
+          <span class="muted">第 {{.KeyPage.Start}}-{{.KeyPage.End}} 条 / 共 {{.KeyPage.Total}} 条</span>
+        </div>
         <div class="panel-body">
-          <table>
-            <thead><tr><th>ID</th><th>Key</th><th>Restricted email</th><th>Bound users</th><th>Usage</th><th>Created</th><th>Expires</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody>
-            <tr>
-              <td>New</td>
-              <td>
-                <input form="key-create" class="mono compact" name="key" placeholder="blank generates random">
-                <input form="key-create" type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
-              </td>
-              <td><input form="key-create" class="compact" name="bound_email" placeholder="optional"></td>
-              <td class="muted">None</td>
-              <td><input form="key-create" class="compact" name="max_uses" type="number" min="1" max="1000" value="1"></td>
-              <td class="muted">Now</td>
-              <td><input form="key-create" class="compact" name="expires_at" type="datetime-local"></td>
-              <td><span class="status">new</span></td>
-              <td>
-                <form id="key-create" method="post" action="/admin/key/save"></form>
-                <button form="key-create" type="submit">Create</button>
-              </td>
-            </tr>
-            {{range .Keys}}
-            <tr>
-              <td>
-                <code>{{.ID}}</code>
-                <input form="key-save-{{.ID}}" type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
-                <input form="key-save-{{.ID}}" type="hidden" name="id" value="{{.ID}}">
-              </td>
-              <td>
-                {{if .Key}}
-                <input form="key-save-{{.ID}}" class="mono compact" name="key" value="{{.Key}}">
-                {{else}}
-                <input form="key-save-{{.ID}}" class="mono compact" name="key" placeholder="legacy hidden; enter a new key to replace">
-                {{end}}
-              </td>
-              <td><input form="key-save-{{.ID}}" class="compact" name="bound_email" value="{{.BoundEmail}}" placeholder="any allowed domain"></td>
-              <td>
-                {{if .Bindings}}<textarea class="compact" readonly>{{.Bindings}}</textarea>{{else}}<span class="muted">None</span>{{end}}
-              </td>
-              <td><input form="key-save-{{.ID}}" class="compact" name="max_uses" type="number" min="1" max="1000" value="{{.MaxUses}}"><div class="muted">{{.UsedCount}} / {{.MaxUses}}</div></td>
-              <td>{{.CreatedAt}}</td>
-              <td><input form="key-save-{{.ID}}" class="compact" name="expires_at" type="datetime-local" value="{{.ExpiresInput}}"><div class="muted">{{.ExpiresAt}}</div></td>
-              <td><span class="status">{{.Status}}</span></td>
-              <td>
-                <div class="actions">
-                  <form id="key-save-{{.ID}}" method="post" action="/admin/key/save"></form>
-                  <button form="key-save-{{.ID}}" type="submit">Save</button>
-                  {{if .Revoked}}
-                  <form method="post" action="/admin/restore">
-                    <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
-                    <input type="hidden" name="id" value="{{.ID}}">
-                    <button class="secondary" type="submit">Restore</button>
-                  </form>
+          <div class="toolbar">
+            <form id="key-batch" method="post" action="/admin/key/batch" class="batch-actions">
+              <input type="hidden" name="tenant_id" value="{{.Tenant.ID}}">
+              <button class="secondary" type="submit" name="action" value="revoke">批量禁用</button>
+              <button class="danger" type="submit" name="action" value="delete" onclick="return confirm('删除选中的卡密？');">批量删除</button>
+            </form>
+            <form method="get" action="/admin" class="batch-actions">
+              <input type="hidden" name="tenant" value="{{.Tenant.ID}}">
+              <input type="hidden" name="tab" value="keys">
+              <label style="margin:0;">每页</label>
+              <select class="compact" name="page_size" onchange="this.form.submit()">
+                <option value="10" {{if eq .KeyPage.PageSize 10}}selected{{end}}>10</option>
+                <option value="20" {{if eq .KeyPage.PageSize 20}}selected{{end}}>20</option>
+                <option value="50" {{if eq .KeyPage.PageSize 50}}selected{{end}}>50</option>
+                <option value="100" {{if eq .KeyPage.PageSize 100}}selected{{end}}>100</option>
+              </select>
+            </form>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th class="select-cell"><input id="select-all-keys" type="checkbox" aria-label="全选"></th>
+                  <th>卡密 ID</th>
+                  <th>卡密</th>
+                  <th>限定邮箱</th>
+                  <th>已绑定用户</th>
+                  <th>使用数</th>
+                  <th>创建时间</th>
+                  <th>过期时间</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+              {{range .Keys}}
+              <tr>
+                <td class="select-cell"><input class="key-select" form="key-batch" type="checkbox" name="ids" value="{{.ID}}"></td>
+                <td>
+                  <code>{{.ID}}</code>
+                  <input form="key-save-{{.ID}}" type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
+                  <input form="key-save-{{.ID}}" type="hidden" name="id" value="{{.ID}}">
+                </td>
+                <td>
+                  {{if .Key}}
+                  <input form="key-save-{{.ID}}" class="mono compact" name="key" value="{{.Key}}">
                   {{else}}
-                  <form method="post" action="/admin/revoke">
-                    <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
-                    <input type="hidden" name="id" value="{{.ID}}">
-                    <button class="secondary" type="submit">Revoke</button>
-                  </form>
+                  <input form="key-save-{{.ID}}" class="mono compact" name="key" placeholder="历史卡密隐藏，输入新值可替换">
                   {{end}}
-                  <form method="post" action="/admin/key/delete" onsubmit="return confirm('Delete this key?');">
-                  <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
-                  <input type="hidden" name="id" value="{{.ID}}">
-                    <button class="danger" type="submit">Delete</button>
-                  </form>
-                </div>
-              </td>
-            </tr>
-            {{else}}
-            <tr><td colspan="9" class="muted">No keys yet.</td></tr>
-            {{end}}
-            </tbody>
-          </table>
+                </td>
+                <td><input form="key-save-{{.ID}}" class="compact" name="bound_email" value="{{.BoundEmail}}" placeholder="不限"></td>
+                <td>{{if .Bindings}}<textarea class="compact" readonly>{{.Bindings}}</textarea>{{else}}<span class="muted">无</span>{{end}}</td>
+                <td><input form="key-save-{{.ID}}" class="compact" name="max_uses" type="number" min="1" max="1000" value="{{.MaxUses}}"><div class="muted">{{.UsedCount}} / {{.MaxUses}}</div></td>
+                <td>{{.CreatedAt}}</td>
+                <td><input form="key-save-{{.ID}}" class="compact" name="expires_at" type="datetime-local" value="{{.ExpiresInput}}"><div class="muted">{{.ExpiresAt}}</div></td>
+                <td><span class="status">{{.Status}}</span></td>
+                <td>
+                  <div class="actions">
+                    <form id="key-save-{{.ID}}" method="post" action="/admin/key/save"></form>
+                    <button form="key-save-{{.ID}}" type="submit">保存</button>
+                    {{if .Revoked}}
+                    <form method="post" action="/admin/restore">
+                      <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
+                      <input type="hidden" name="id" value="{{.ID}}">
+                      <button class="secondary" type="submit">恢复</button>
+                    </form>
+                    {{else}}
+                    <form method="post" action="/admin/revoke">
+                      <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
+                      <input type="hidden" name="id" value="{{.ID}}">
+                      <button class="secondary" type="submit">禁用</button>
+                    </form>
+                    {{end}}
+                    <form method="post" action="/admin/key/delete" onsubmit="return confirm('删除这条卡密？');">
+                      <input type="hidden" name="tenant_id" value="{{$.Tenant.ID}}">
+                      <input type="hidden" name="id" value="{{.ID}}">
+                      <button class="danger" type="submit">删除</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+              {{else}}
+              <tr><td colspan="10" class="muted">暂无卡密。</td></tr>
+              {{end}}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="toolbar" style="margin-top:14px;margin-bottom:0;">
+            <div class="muted">第 {{.KeyPage.Page}} / {{.KeyPage.TotalPages}} 页</div>
+            <div class="pager">
+              <a class="page-link {{if not .KeyPage.HasPrev}}disabled{{end}}" href="/admin?tenant={{.Tenant.ID}}&tab=keys&key_page={{.KeyPage.PrevPage}}&page_size={{.KeyPage.PageSize}}">上一页</a>
+              {{range .KeyPage.Pages}}
+              <a class="page-link {{if eq . $.KeyPage.Page}}active{{end}}" href="/admin?tenant={{$.Tenant.ID}}&tab=keys&key_page={{.}}&page_size={{$.KeyPage.PageSize}}">{{.}}</a>
+              {{end}}
+              <a class="page-link {{if not .KeyPage.HasNext}}disabled{{end}}" href="/admin?tenant={{.Tenant.ID}}&tab=keys&key_page={{.KeyPage.NextPage}}&page_size={{.KeyPage.PageSize}}">下一页</a>
+            </div>
+          </div>
         </div>
       </section>
     </div>
+    {{end}}
   </main>
 </div>
+<script>
+const selectAllKeys = document.getElementById('select-all-keys');
+if (selectAllKeys) {
+  selectAllKeys.addEventListener('change', () => {
+    document.querySelectorAll('.key-select').forEach((item) => {
+      item.checked = selectAllKeys.checked;
+    });
+  });
+}
+</script>
 </body>
 </html>
 {{end}}

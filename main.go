@@ -96,6 +96,7 @@ func main() {
 	mux.HandleFunc("/admin/keys", app.handleAdminKeys)
 	mux.HandleFunc("/admin/key/save", app.handleAdminKeySave)
 	mux.HandleFunc("/admin/key/delete", app.handleAdminKeyDelete)
+	mux.HandleFunc("/admin/key/batch", app.handleAdminKeyBatch)
 	mux.HandleFunc("/admin/revoke", app.handleAdminRevoke)
 	mux.HandleFunc("/admin/restore", app.handleAdminRestore)
 	mux.HandleFunc("/admin/tenants", app.handleAdminTenants)

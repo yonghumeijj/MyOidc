@@ -206,6 +206,65 @@ func TestInviteKeyMaxUsesAllowsMultipleBoundEmails(t *testing.T) {
 	}
 }
 
+func TestKeyListPagePaginatesKeys(t *testing.T) {
+	store := newTestStore(t)
+	tenant := newTestTenant(t, store)
+	if _, err := store.GenerateKeys(tenant.ID, 25, nil, nil); err != nil {
+		t.Fatalf("GenerateKeys: %v", err)
+	}
+
+	page, err := store.KeyListPage(tenant.ID, 2, 10)
+	if err != nil {
+		t.Fatalf("KeyListPage: %v", err)
+	}
+	if page.Total != 25 || page.TotalPages != 3 {
+		t.Fatalf("page totals = %d/%d, want 25/3", page.Total, page.TotalPages)
+	}
+	if page.Page != 2 || page.PageSize != 10 {
+		t.Fatalf("page = %d size = %d, want 2/10", page.Page, page.PageSize)
+	}
+	if page.Start != 11 || page.End != 20 {
+		t.Fatalf("range = %d-%d, want 11-20", page.Start, page.End)
+	}
+	if len(page.Items) != 10 {
+		t.Fatalf("items = %d, want 10", len(page.Items))
+	}
+	if !page.HasPrev || !page.HasNext {
+		t.Fatalf("HasPrev/HasNext = %t/%t, want true/true", page.HasPrev, page.HasNext)
+	}
+}
+
+func TestBatchRevokeAndDeleteKeys(t *testing.T) {
+	store := newTestStore(t)
+	tenant := newTestTenant(t, store)
+	generated, err := store.GenerateKeys(tenant.ID, 3, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateKeys: %v", err)
+	}
+
+	if err := store.RevokeKeys(tenant.ID, []string{generated[0].ID, generated[1].ID, generated[1].ID}); err != nil {
+		t.Fatalf("RevokeKeys: %v", err)
+	}
+	keys := store.KeyViews(tenant.ID)
+	var revoked int
+	for _, key := range keys {
+		if key.Revoked {
+			revoked++
+		}
+	}
+	if revoked != 2 {
+		t.Fatalf("revoked = %d, want 2", revoked)
+	}
+
+	if err := store.DeleteKeys(tenant.ID, []string{generated[0].ID, generated[2].ID}); err != nil {
+		t.Fatalf("DeleteKeys: %v", err)
+	}
+	keys = store.KeyViews(tenant.ID)
+	if len(keys) != 1 || keys[0].ID != generated[1].ID {
+		t.Fatalf("remaining keys = %#v, want only second key", keys)
+	}
+}
+
 func TestTenantIsolation(t *testing.T) {
 	store := newTestStore(t)
 	tenantA := newTestTenant(t, store)
