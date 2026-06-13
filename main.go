@@ -92,6 +92,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", app.handleRoot)
+	mux.HandleFunc("/key-query", app.handleKeyQuery)
+	mux.HandleFunc("/admin/login", app.handleAdminLogin)
+	mux.HandleFunc("/admin/logout", app.handleAdminLogout)
 	mux.HandleFunc("/admin", app.handleAdmin)
 	mux.HandleFunc("/admin/keys", app.handleAdminKeys)
 	mux.HandleFunc("/admin/key/save", app.handleAdminKeySave)

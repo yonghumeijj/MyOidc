@@ -39,7 +39,15 @@ type LoginPageData struct {
 	AllowedDomains    string
 	AllowedDomainList []string
 	PrimaryDomain     string
+	IsAuthFlow        bool
+	Lookup            KeyLookupView
 	Error             string
+}
+
+type AdminLoginPageData struct {
+	AdminUser string
+	Next      string
+	Error     string
 }
 
 func (a *App) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +55,40 @@ func (a *App) handleRoot(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.Redirect(w, r, "/admin", http.StatusFound)
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tenant, ok := a.tenantForRequest(w, r)
+	if !ok {
+		return
+	}
+	a.renderLogin(w, tenant, AuthRequest{}, "", KeyLookupView{})
+}
+
+func (a *App) handleKeyQuery(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := a.tenantForRequest(w, r)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderLogin(w, tenant, AuthRequest{}, "表单无效", KeyLookupView{})
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	lookup, err := a.store.LookupKeyByPlaintext(tenant.ID, key)
+	if err != nil {
+		a.renderLogin(w, tenant, AuthRequest{}, "", KeyLookupView{
+			Key:   key,
+			Error: "未找到这张卡密，或卡密不属于当前站点。",
+		})
+		return
+	}
+	a.renderLogin(w, tenant, AuthRequest{}, "", lookup)
 }
 
 func (a *App) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +100,48 @@ func (a *App) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.renderAdmin(w, r, nil, "")
+}
+
+func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	next := safeAdminNext(r.FormValue("next"))
+	if next == "" {
+		next = safeAdminNext(r.URL.Query().Get("next"))
+	}
+	if next == "" {
+		next = "/admin"
+	}
+	if _, ok := a.readAdminSession(r); ok && r.Method == http.MethodGet {
+		http.Redirect(w, r, next, http.StatusFound)
+		return
+	}
+	if r.Method == http.MethodGet {
+		a.renderAdminLogin(w, AdminLoginPageData{
+			AdminUser: a.cfg.AdminUser,
+			Next:      next,
+		})
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderAdminLogin(w, AdminLoginPageData{AdminUser: a.cfg.AdminUser, Next: next, Error: "表单无效"})
+		return
+	}
+	user := strings.TrimSpace(r.FormValue("username"))
+	pass := strings.TrimSpace(r.FormValue("password"))
+	if !constantTimeStringEqual(user, a.cfg.AdminUser) || !constantTimeStringEqual(pass, a.adminPassword()) {
+		a.renderAdminLogin(w, AdminLoginPageData{AdminUser: a.cfg.AdminUser, Next: next, Error: "用户名或密码错误"})
+		return
+	}
+	a.setAdminSessionCookie(w, r, user)
+	http.Redirect(w, r, next, http.StatusFound)
+}
+
+func (a *App) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	a.clearAdminSessionCookie(w, r)
+	http.Redirect(w, r, "/admin/login", http.StatusFound)
 }
 
 func (a *App) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +424,7 @@ func (a *App) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("oidc authorize login_required rid=%s host=%q tenant=%q issuer=%q client_id=%q redirect_uri=%q scope=%q", rid, r.Host, tenant.ID, tenant.IssuerURL, auth.ClientID, auth.RedirectURI, auth.Scope)
-	a.renderLogin(w, tenant, auth, "")
+	a.renderLogin(w, tenant, auth, "", KeyLookupView{})
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -371,7 +454,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.FormValue("key"))
 	if email == "" || key == "" {
 		log.Printf("oidc login rejected rid=%s reason=%q host=%q tenant=%q email_present=%t key_present=%t", rid, "missing_email_or_key", r.Host, tenant.ID, email != "", key != "")
-		a.renderLogin(w, tenant, auth, "email and key are required")
+		a.renderLogin(w, tenant, auth, "邮箱和卡密不能为空", KeyLookupView{})
 		return
 	}
 
@@ -380,10 +463,10 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, ErrInvalidEmailDomain):
 			log.Printf("oidc login rejected rid=%s reason=%q host=%q tenant=%q email_hash=%q email_domain=%q allowed_domains=%q", rid, "invalid_email_domain", r.Host, tenant.ID, hashPrefixForLog(email), emailDomainForLog(email), tenant.AllowedDomains)
-			a.renderLogin(w, tenant, auth, fmt.Sprintf("email must match one of: %s", allowedDomainsLabel(tenant)))
+			a.renderLogin(w, tenant, auth, fmt.Sprintf("邮箱必须属于：%s", allowedDomainsLabel(tenant)), KeyLookupView{})
 		default:
 			log.Printf("oidc login rejected rid=%s reason=%q host=%q tenant=%q email_hash=%q email_domain=%q key_hash=%q", rid, "invalid_invite_key", r.Host, tenant.ID, hashPrefixForLog(email), emailDomainForLog(email), hashPrefixForLog(key))
-			a.renderLogin(w, tenant, auth, "key is invalid, used, expired, revoked, or bound to another email")
+			a.renderLogin(w, tenant, auth, "卡密无效、已过期、已禁用，或已经绑定到其他邮箱", KeyLookupView{})
 		}
 		return
 	}
@@ -718,16 +801,19 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if _, ok := a.readAdminSession(r); ok {
+		return true
+	}
 	user, pass, ok := r.BasicAuth()
 	adminPassword := a.adminPassword()
-	if !ok ||
-		!constantTimeStringEqual(user, a.cfg.AdminUser) ||
-		!constantTimeStringEqual(pass, adminPassword) {
-		w.Header().Set("WWW-Authenticate", `Basic realm="gooidc admin"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return false
+	if ok &&
+		constantTimeStringEqual(user, a.cfg.AdminUser) &&
+		constantTimeStringEqual(pass, adminPassword) {
+		return true
 	}
-	return true
+	next := safeAdminNext(r.URL.RequestURI())
+	http.Redirect(w, r, "/admin/login?next="+url.QueryEscape(next), http.StatusFound)
+	return false
 }
 
 func (a *App) adminPassword() string {
@@ -974,15 +1060,35 @@ func adminPath(tenantID string, tab string, notice string) string {
 	return "/admin?" + q.Encode()
 }
 
-func (a *App) renderLogin(w http.ResponseWriter, tenant Tenant, auth AuthRequest, errText string) {
+func safeAdminNext(next string) string {
+	next = strings.TrimSpace(next)
+	if next == "" || !strings.HasPrefix(next, "/admin") || strings.HasPrefix(next, "//") {
+		return "/admin"
+	}
+	if strings.HasPrefix(next, "/admin/login") || strings.HasPrefix(next, "/admin/logout") {
+		return "/admin"
+	}
+	return next
+}
+
+func (a *App) renderLogin(w http.ResponseWriter, tenant Tenant, auth AuthRequest, errText string, lookup KeyLookupView) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := pages.ExecuteTemplate(w, "login", LoginPageData{
 		Auth:              auth,
 		AllowedDomains:    allowedDomainsLabel(tenant),
 		AllowedDomainList: tenant.AllowedDomainList(),
 		PrimaryDomain:     tenant.PrimaryAllowedDomain(),
+		IsAuthFlow:        auth.ClientID != "" && auth.RedirectURI != "",
+		Lookup:            lookup,
 		Error:             errText,
 	}); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func (a *App) renderAdminLogin(w http.ResponseWriter, data AdminLoginPageData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := pages.ExecuteTemplate(w, "admin_login", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }

@@ -206,6 +206,35 @@ func TestInviteKeyMaxUsesAllowsMultipleBoundEmails(t *testing.T) {
 	}
 }
 
+func TestLookupKeyByPlaintextShowsBoundEmails(t *testing.T) {
+	store := newTestStore(t)
+	tenant := newTestTenant(t, store)
+	generated, err := store.GenerateKeysWithMaxUses(tenant.ID, 1, nil, nil, 2)
+	if err != nil {
+		t.Fatalf("GenerateKeysWithMaxUses: %v", err)
+	}
+	if _, err := store.UseInviteKey(tenant.ID, "alice@example.com", generated[0].Key, tenant.AllowedDomains); err != nil {
+		t.Fatalf("alice UseInviteKey: %v", err)
+	}
+	if _, err := store.UseInviteKey(tenant.ID, "bob@example.com", generated[0].Key, tenant.AllowedDomains); err != nil {
+		t.Fatalf("bob UseInviteKey: %v", err)
+	}
+
+	lookup, err := store.LookupKeyByPlaintext(tenant.ID, generated[0].Key)
+	if err != nil {
+		t.Fatalf("LookupKeyByPlaintext: %v", err)
+	}
+	if !lookup.Found {
+		t.Fatalf("Found = false, want true")
+	}
+	if !strings.Contains(lookup.Bindings, "alice@example.com") || !strings.Contains(lookup.Bindings, "bob@example.com") {
+		t.Fatalf("Bindings = %q, want alice and bob", lookup.Bindings)
+	}
+	if lookup.UsedCount != 2 || lookup.MaxUses != 2 {
+		t.Fatalf("usage = %d/%d, want 2/2", lookup.UsedCount, lookup.MaxUses)
+	}
+}
+
 func TestKeyListPagePaginatesKeys(t *testing.T) {
 	store := newTestStore(t)
 	tenant := newTestTenant(t, store)

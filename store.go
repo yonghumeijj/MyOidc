@@ -148,6 +148,18 @@ type KeyView struct {
 	Revoked      bool
 }
 
+type KeyLookupView struct {
+	Found           bool
+	Key             string
+	Status          string
+	RestrictedEmail string
+	Bindings        string
+	UsedCount       int
+	MaxUses         int
+	ExpiresAt       string
+	Error           string
+}
+
 type KeyListPage struct {
 	Items      []KeyView
 	Page       int
@@ -1289,6 +1301,69 @@ func (s *Store) KeyListPage(tenantID string, page int, pageSize int) (KeyListPag
 		Start:      start,
 		End:        end,
 		Pages:      pageWindow(page, totalPages),
+	}, nil
+}
+
+func (s *Store) LookupKeyByPlaintext(tenantID string, key string) (KeyLookupView, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	key = strings.TrimSpace(key)
+	if tenantID == "" || key == "" {
+		return KeyLookupView{}, ErrInvalidInviteKey
+	}
+	rows, err := s.db.Query(
+		`SELECT
+				k.id,
+				k.plain_key,
+				k.bound_email,
+				k.max_uses,
+				k.created_at,
+				k.expires_at,
+				k.used_at,
+				k.revoked_at,
+				COALESCE((
+					SELECT GROUP_CONCAT(email, char(10))
+					FROM (
+						SELECT email
+						FROM invite_key_bindings
+						WHERE tenant_id = k.tenant_id AND key_id = k.id
+						ORDER BY first_used_at
+					)
+				), ''),
+				(SELECT COUNT(*) FROM invite_key_bindings WHERE tenant_id = k.tenant_id AND key_id = k.id)
+			FROM invite_keys AS k
+			WHERE k.tenant_id = ? AND k.hash = ?
+			LIMIT 1`,
+		tenantID,
+		hashToken(key),
+	)
+	if err != nil {
+		return KeyLookupView{}, err
+	}
+	defer rows.Close()
+	items, err := scanKeyRows(rows)
+	if err != nil {
+		return KeyLookupView{}, err
+	}
+	if len(items) == 0 {
+		return KeyLookupView{}, ErrInvalidInviteKey
+	}
+	item := items[0]
+	bindings := strings.TrimSpace(item.Bindings)
+	if bindings == "" && item.BoundEmail != "" {
+		bindings = item.BoundEmail
+	}
+	if bindings == "" {
+		bindings = "尚未绑定邮箱"
+	}
+	return KeyLookupView{
+		Found:           true,
+		Key:             key,
+		Status:          item.Status,
+		RestrictedEmail: item.BoundEmail,
+		Bindings:        bindings,
+		UsedCount:       item.UsedCount,
+		MaxUses:         item.MaxUses,
+		ExpiresAt:       item.ExpiresAt,
 	}, nil
 }
 

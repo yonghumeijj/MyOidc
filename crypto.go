@@ -164,6 +164,59 @@ func (a *App) setSessionCookie(w http.ResponseWriter, tenant Tenant, email strin
 	})
 }
 
+func (a *App) setAdminSessionCookie(w http.ResponseWriter, r *http.Request, user string) {
+	expires := time.Now().UTC().Add(12 * time.Hour)
+	payload := normalizeAdminUser(user) + "|" + strconv.FormatInt(expires.Unix(), 10)
+	sig := hmacSign(a.cookieSecret, payload)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "gooidc_admin",
+		Value:    payload + "|" + sig,
+		Path:     "/admin",
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expires,
+	})
+}
+
+func (a *App) clearAdminSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "gooidc_admin",
+		Value:    "",
+		Path:     "/admin",
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0),
+	})
+}
+
+func (a *App) readAdminSession(r *http.Request) (string, bool) {
+	cookie, err := r.Cookie("gooidc_admin")
+	if err != nil {
+		return "", false
+	}
+	parts := strings.Split(cookie.Value, "|")
+	if len(parts) != 3 {
+		return "", false
+	}
+	payload := parts[0] + "|" + parts[1]
+	expected := hmacSign(a.cookieSecret, payload)
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(parts[2])) != 1 {
+		return "", false
+	}
+	expUnix, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || time.Now().UTC().After(time.Unix(expUnix, 0)) {
+		return "", false
+	}
+	user := normalizeAdminUser(parts[0])
+	if !constantTimeStringEqual(user, normalizeAdminUser(a.cfg.AdminUser)) {
+		return "", false
+	}
+	return user, true
+}
+
 func (a *App) readSessionEmail(r *http.Request, tenant Tenant) (string, bool) {
 	cookie, err := r.Cookie("gooidc_session")
 	if err != nil {
@@ -190,6 +243,20 @@ func (a *App) readSessionEmail(r *http.Request, tenant Tenant) (string, bool) {
 		return "", false
 	}
 	return email, true
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(firstHeaderValue(r.Header.Get("X-Forwarded-Proto")), "https") {
+		return true
+	}
+	return !isLocalHost(normalizeHost(r.Host))
+}
+
+func normalizeAdminUser(user string) string {
+	return strings.TrimSpace(user)
 }
 
 func hmacSign(secret []byte, payload string) string {

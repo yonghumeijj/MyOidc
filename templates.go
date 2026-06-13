@@ -2,7 +2,7 @@ package main
 
 import "html/template"
 
-var pages = template.Must(template.New("pages").Parse(adminHTML + loginHTML))
+var pages = template.Must(template.New("pages").Parse(adminHTML + adminLoginHTML + loginHTML))
 
 const pageCSS = `
 :root {
@@ -324,18 +324,29 @@ td { overflow-wrap: anywhere; }
   place-items: center;
   padding: 24px;
 }
+.login-grid {
+  width: min(960px, 100%);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
 .login-card {
-  width: min(460px, 100%);
+  width: 100%;
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 22px;
+}
+.login-card.solo {
+  width: min(460px, 100%);
 }
 @media (max-width: 980px) {
   .admin-shell { grid-template-columns: 1fr; }
   .sidebar { position: static; }
   .workspace { padding: 18px; }
   .span-4, .span-5, .span-6, .span-7, .span-8, .span-12 { grid-column: span 12; }
+  .login-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
   .topbar { flex-direction: column; }
@@ -373,6 +384,7 @@ const adminHTML = `
     <div class="foot">
       <div>管理员</div>
       <strong>{{.AdminUser}}</strong>
+      <div style="margin-top:8px;"><a href="/admin/logout">退出登录</a></div>
     </div>
   </aside>
 
@@ -682,48 +694,111 @@ if (selectAllKeys) {
 {{end}}
 `
 
-const loginHTML = `
-{{define "login"}}
+const adminLoginHTML = `
+{{define "admin_login"}}
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in</title>
+  <title>管理员登录</title>
   <style>` + pageCSS + `</style>
 </head>
 <body>
 <main class="login">
-  <section class="login-card">
-    <h1>Sign in</h1>
-    <p>Use your email name and key.</p>
-    <pre style="margin:14px 0;">{{.AllowedDomains}}</pre>
-    {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
-    <form method="post" action="/login" class="stack">
-      <input type="hidden" name="response_type" value="{{.Auth.ResponseType}}">
-      <input type="hidden" name="client_id" value="{{.Auth.ClientID}}">
-      <input type="hidden" name="redirect_uri" value="{{.Auth.RedirectURI}}">
-      <input type="hidden" name="scope" value="{{.Auth.Scope}}">
-      <input type="hidden" name="state" value="{{.Auth.State}}">
-      <input type="hidden" name="nonce" value="{{.Auth.Nonce}}">
+  <section class="login-card solo">
+    <h1>管理员登录</h1>
+    <p>登录后可以管理租户、卡密和管理员密码。</p>
+    {{if .Error}}<div class="error" style="margin-top:16px;">{{.Error}}</div>{{end}}
+    <form method="post" action="/admin/login" class="stack" style="margin-top:16px;">
+      <input type="hidden" name="next" value="{{.Next}}">
       <div>
-        <label>Email</label>
-        <div class="email-row">
-          <input name="email_local" autocomplete="username" placeholder="name" required>
-          <select name="email_domain" aria-label="Email domain">
-            {{range .AllowedDomainList}}
-            <option value="{{.}}" {{if eq . $.PrimaryDomain}}selected{{end}}>@{{.}}</option>
-            {{end}}
-          </select>
-        </div>
+        <label>用户名</label>
+        <input name="username" value="{{.AdminUser}}" autocomplete="username" required>
       </div>
       <div>
-        <label>Login key</label>
-        <input name="key" type="password" autocomplete="one-time-code" required>
+        <label>密码</label>
+        <input name="password" type="password" autocomplete="current-password" required>
       </div>
-      <div class="actions"><button type="submit">Continue</button></div>
+      <div class="actions"><button type="submit">登录后台</button></div>
     </form>
   </section>
+</main>
+</body>
+</html>
+{{end}}
+`
+
+const loginHTML = `
+{{define "login"}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录</title>
+  <style>` + pageCSS + `</style>
+</head>
+<body>
+<main class="login">
+  <div class="login-grid">
+    <section class="login-card">
+      <h1>账号登录</h1>
+      <p>{{if .IsAuthFlow}}输入邮箱前缀和卡密后继续完成 OpenAI SSO 登录。{{else}}此页面用于卡密查询；OpenAI SSO 登录会自动跳转到这里。{{end}}</p>
+      <pre style="margin:14px 0;">{{.AllowedDomains}}</pre>
+      {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+      {{if .IsAuthFlow}}
+      <form method="post" action="/login" class="stack">
+        <input type="hidden" name="response_type" value="{{.Auth.ResponseType}}">
+        <input type="hidden" name="client_id" value="{{.Auth.ClientID}}">
+        <input type="hidden" name="redirect_uri" value="{{.Auth.RedirectURI}}">
+        <input type="hidden" name="scope" value="{{.Auth.Scope}}">
+        <input type="hidden" name="state" value="{{.Auth.State}}">
+        <input type="hidden" name="nonce" value="{{.Auth.Nonce}}">
+        <div>
+          <label>邮箱</label>
+          <div class="email-row">
+            <input name="email_local" autocomplete="username" placeholder="name" required>
+            <select name="email_domain" aria-label="邮箱域名">
+              {{range .AllowedDomainList}}
+              <option value="{{.}}" {{if eq . $.PrimaryDomain}}selected{{end}}>@{{.}}</option>
+              {{end}}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label>卡密</label>
+          <input name="key" type="password" autocomplete="one-time-code" required>
+        </div>
+        <div class="actions"><button type="submit">继续登录</button></div>
+      </form>
+      {{else}}
+      <div class="notice" style="margin-top:16px;">请从 OpenAI SSO 页面发起登录流程。</div>
+      {{end}}
+    </section>
+
+    <section class="login-card">
+      <h2>卡密查询</h2>
+      <p>输入卡密可查看当前绑定邮箱和可用状态。</p>
+      <form method="post" action="/key-query" class="stack" style="margin-top:16px;">
+        <div>
+          <label>卡密</label>
+          <input class="mono" name="key" value="{{.Lookup.Key}}" autocomplete="off" required>
+        </div>
+        <div class="actions"><button type="submit">查询卡密</button></div>
+      </form>
+      {{if .Lookup.Error}}<div class="error" style="margin-top:16px;">{{.Lookup.Error}}</div>{{end}}
+      {{if .Lookup.Found}}
+      <dl style="margin-top:16px;">
+        <div class="summary"><dt>状态</dt><dd><span class="status">{{.Lookup.Status}}</span></dd></div>
+        <div class="summary"><dt>对应邮箱</dt><dd><pre>{{.Lookup.Bindings}}</pre></dd></div>
+        <div class="summary"><dt>限定邮箱</dt><dd>{{if .Lookup.RestrictedEmail}}{{.Lookup.RestrictedEmail}}{{else}}不限{{end}}</dd></div>
+        <div class="summary"><dt>使用数</dt><dd>{{.Lookup.UsedCount}} / {{.Lookup.MaxUses}}</dd></div>
+        <div class="summary"><dt>过期时间</dt><dd>{{.Lookup.ExpiresAt}}</dd></div>
+      </dl>
+      {{end}}
+    </section>
+  </div>
 </main>
 </body>
 </html>

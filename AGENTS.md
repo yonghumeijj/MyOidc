@@ -6,6 +6,7 @@ This is a small self-hosted OpenID Connect provider for one narrow use case:
 
 - The administrator creates and manages login keys.
 - A user signs in with an allowed email name/domain and login key.
+- The public root page shows the login-style page and lets users query which email addresses a key is bound to.
 - The email must belong to one of the selected tenant's allowed email domains, for example `@abc.com`.
 - The service issues OIDC tokens so OpenAI / ChatGPT Business can use it as a Custom OIDC SSO provider.
 
@@ -43,6 +44,8 @@ The service exposes:
 - `/userinfo`
 - `/login`
 - `/admin`
+- `/admin/login`
+- `/key-query`
 
 The supported flow is authorization code flow:
 
@@ -230,4 +233,6 @@ When changing this project:
   access token, or session authenticate against another tenant.
 - Keep the admin page server-rendered but usable for routine operations, including tenant
   editing, login key CRUD, and admin password changes.
+- Keep `/admin/login` as the browser-facing admin login experience. Do not reintroduce a
+  `WWW-Authenticate` challenge for normal browser admin access.
 - Update `README.md` when changing environment variables or deployment behavior.

@@ -27,6 +27,9 @@ Admin page:
 http://localhost:8080/admin
 ```
 
+The public root page `/` shows the user login-style page and a key lookup form. The lookup
+form lets a user enter a login key and see the email addresses currently bound to it.
+
 If `ADMIN_PASSWORD` is not set, the service generates one and stores it in:
 
 ```text
@@ -199,6 +202,10 @@ the key's max bound email count if one key should allow multiple different email
 The admin password can also be changed in `/admin`. When `ADMIN_PASSWORD` is set as an
 environment variable, that value will be used again after container restart; omit it if you
 want the password stored in `/data/admin_password.txt` to be the source of truth.
+
+Admin authentication uses the `/admin/login` form and a signed session cookie. HTTP Basic
+credentials are still accepted for compatibility, but browsers are no longer challenged with
+a Basic Auth popup.
 
 ## Security Notes
 
