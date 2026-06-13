@@ -6,7 +6,7 @@ This is a small self-hosted OpenID Connect provider for one narrow use case:
 
 - The administrator generates one-time login keys.
 - A user signs in with `email + one-time key`.
-- The email must belong to the selected tenant's allowed domain, for example `@abc.com`.
+- The email must belong to one of the selected tenant's allowed email domains, for example `@abc.com`.
 - The service issues OIDC tokens so OpenAI / ChatGPT Business can use it as a Custom OIDC SSO provider.
 
 This project is intentionally lightweight. It is not a full identity platform like authentik,
@@ -51,7 +51,9 @@ OpenAI -> /authorize -> /login -> redirect with code -> /token -> id_token
 ```
 
 Requests are routed by HTTP `Host` to a configured tenant. Each tenant has its own issuer URL,
-allowed email domain, OIDC client ID, client secret, and redirect URI allow-list.
+allowed email domain allow-list, OIDC client ID, client secret, and redirect URI allow-list.
+One issuer tenant can allow multiple email domains; those email domains do not need their own
+SSO DNS records.
 
 Token endpoint client authentication supports:
 
@@ -99,7 +101,7 @@ Security behavior:
 - A key can be revoked.
 - A key can expire.
 - A key can optionally be bound to a specific email.
-- If a key is not bound to an email, whoever holds it can choose any email in the selected tenant's allowed domain.
+- If a key is not bound to an email, whoever holds it can choose any email in the selected tenant's allowed email domains.
 - Invite keys, authorization codes, access tokens, and sessions are scoped to one tenant.
 
 Current behavior is "one-time login key", not "one-time registration key".
@@ -114,7 +116,7 @@ Required or strongly recommended in production for first-run tenant seeding:
 
 ```text
 ISSUER_URL=https://sso.example.com
-ALLOWED_DOMAIN=example.com
+ALLOWED_DOMAINS=example.com,other-example.com
 OIDC_CLIENT_ID=openai
 OIDC_CLIENT_SECRET=<strong random secret>
 OIDC_REDIRECT_URIS=<callback URL copied from OpenAI SSO page>
@@ -124,14 +126,17 @@ DATA_DIR=/data
 ADDR=:8080
 ```
 
-`ISSUER_URL` must exactly match the public HTTPS URL OpenAI can reach.
+`ISSUER_URL` must exactly match the public HTTPS URL OpenAI can reach. It is just the OIDC
+service address; allowed login email domains are configured separately in the tenant.
 
 `OIDC_REDIRECT_URIS` should be configured. If empty, the service accepts any redirect URI,
 which is not recommended for production.
 
-These OIDC variables seed the first tenant when the SQLite database has no tenants. After that,
-tenants are managed in `/admin`. Multiple public issuer domains can point to the same container
-as long as the reverse proxy preserves the original `Host` header.
+These OIDC variables seed the first tenant when the SQLite database has no tenants. `ALLOWED_DOMAIN`
+is still accepted for backward compatibility, but `ALLOWED_DOMAINS` is preferred. After first boot,
+tenants and their allowed email domain lists are managed in `/admin`. Multiple public issuer domains
+can point to the same container as long as the reverse proxy preserves the original `Host` header,
+but the common setup is one issuer with multiple allowed email domains.
 
 ## Docker
 
@@ -150,7 +155,7 @@ docker run -d \
   -p 8080:8080 \
   -v gooidc-data:/data \
   -e ISSUER_URL=https://sso.example.com \
-  -e ALLOWED_DOMAIN=example.com \
+  -e ALLOWED_DOMAINS=example.com,other-example.com \
   -e OIDC_CLIENT_ID=openai \
   -e OIDC_REDIRECT_URIS=https://callback.example/from/openai \
   -e ADMIN_USER=admin \

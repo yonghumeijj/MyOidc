@@ -84,7 +84,7 @@ const adminHTML = `
       <div class="row"><div class="label">Issuer</div><div><code>{{.Tenant.IssuerURL}}</code></div></div>
       <div class="row"><div class="label">Discovery</div><div><code>{{.Tenant.IssuerURL}}/.well-known/openid-configuration</code></div></div>
       <div class="row"><div class="label">Host</div><div><code>{{.Tenant.Host}}</code></div></div>
-      <div class="row"><div class="label">Allowed domain</div><div><code>@{{.Tenant.AllowedDomain}}</code></div></div>
+      <div class="row"><div class="label">Allowed domains</div><div><pre>{{.Tenant.AllowedDomains}}</pre></div></div>
       <div class="row"><div class="label">Client ID</div><div><code>{{.Tenant.ClientID}}</code></div></div>
       <div class="row"><div class="label">Client Secret</div><div><code>{{.Tenant.ClientSecret}}</code></div></div>
       <div class="row"><div class="label">Allowed redirects</div><div><pre>{{if .Tenant.RedirectURIs}}{{.Tenant.RedirectURIs}}{{else}}not configured; all redirect_uri values are accepted{{end}}</pre></div></div>
@@ -106,8 +106,8 @@ const adminHTML = `
         </p>
         <p>
           <label>Optional bound emails</label>
-          <textarea name="bound_emails" placeholder="user1@{{.Tenant.AllowedDomain}}
-user2@{{.Tenant.AllowedDomain}}"></textarea>
+          <textarea name="bound_emails" placeholder="user1@{{.Tenant.PrimaryAllowedDomain}}
+user2@{{.Tenant.PrimaryAllowedDomain}}"></textarea>
         </p>
         <button type="submit">Generate</button>
       </form>
@@ -125,8 +125,10 @@ user2@{{.Tenant.AllowedDomain}}"></textarea>
           <input name="issuer_url" value="{{.Tenant.IssuerURL}}" placeholder="https://sso.example.com" required>
         </p>
         <p>
-          <label>Allowed email domain</label>
-          <input name="allowed_domain" value="{{.Tenant.AllowedDomain}}" placeholder="example.com" required>
+          <label>Allowed email domains</label>
+          <textarea name="allowed_domains" placeholder="example.com
+xyz.com
+aaa.com" required>{{.Tenant.AllowedDomains}}</textarea>
         </p>
         <p>
           <label>Client ID</label>
@@ -152,8 +154,10 @@ user2@{{.Tenant.AllowedDomain}}"></textarea>
           <input name="issuer_url" placeholder="https://sso.other-example.com" required>
         </p>
         <p>
-          <label>Allowed email domain</label>
-          <input name="allowed_domain" placeholder="other-example.com" required>
+          <label>Allowed email domains</label>
+          <textarea name="allowed_domains" placeholder="example.com
+xyz.com
+aaa.com" required></textarea>
         </p>
         <p>
           <label>Client ID</label>
@@ -221,7 +225,8 @@ const loginHTML = `
 <main class="login">
   <section class="panel">
     <h1>Sign in</h1>
-    <p>Use your <code>@{{.AllowedDomain}}</code> email and one-time key to continue.</p>
+    <p>Use an allowed email domain and one-time key to continue.</p>
+    <pre>{{.AllowedDomains}}</pre>
     {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
     <form method="post" action="/login">
       <input type="hidden" name="response_type" value="{{.Auth.ResponseType}}">

@@ -108,8 +108,10 @@ func main() {
 func loadConfig() Config {
 	dataDir := env("DATA_DIR", "data")
 	issuer := strings.TrimRight(env("ISSUER_URL", "http://localhost:8080"), "/")
-	domain := strings.ToLower(strings.TrimSpace(env("ALLOWED_DOMAIN", "abc.com")))
-	domain = strings.TrimPrefix(domain, "@")
+	domains := env("ALLOWED_DOMAINS", os.Getenv("ALLOWED_DOMAIN"))
+	if strings.TrimSpace(domains) == "" {
+		domains = "abc.com"
+	}
 
 	return Config{
 		Addr:         env("ADDR", ":8080"),
@@ -117,10 +119,10 @@ func loadConfig() Config {
 		AdminUser:    env("ADMIN_USER", "admin"),
 		SessionHours: envInt("SESSION_HOURS", 12),
 		SeedTenant: TenantInput{
-			IssuerURL:     issuer,
-			AllowedDomain: domain,
-			ClientID:      env("OIDC_CLIENT_ID", "openai"),
-			RedirectURIs:  strings.Join(parseCSVValues(os.Getenv("OIDC_REDIRECT_URIS")), "\n"),
+			IssuerURL:      issuer,
+			AllowedDomains: domains,
+			ClientID:       env("OIDC_CLIENT_ID", "openai"),
+			RedirectURIs:   strings.Join(parseCSVValues(os.Getenv("OIDC_REDIRECT_URIS")), "\n"),
 		},
 	}
 }

@@ -178,7 +178,7 @@ func (a *App) readSessionEmail(r *http.Request, tenant Tenant) (string, bool) {
 		return "", false
 	}
 	email := normalizeEmail(parts[1])
-	if !emailInDomain(email, tenant.AllowedDomain) {
+	if !emailInDomains(email, tenant.AllowedDomains) {
 		return "", false
 	}
 	return email, true

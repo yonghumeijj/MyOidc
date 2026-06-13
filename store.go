@@ -73,15 +73,27 @@ type AccessToken struct {
 }
 
 type Tenant struct {
-	ID            string
-	IssuerURL     string
-	Host          string
-	AllowedDomain string
-	ClientID      string
-	ClientSecret  string
-	RedirectURIs  string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID             string
+	IssuerURL      string
+	Host           string
+	AllowedDomains string
+	ClientID       string
+	ClientSecret   string
+	RedirectURIs   string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+func (t Tenant) AllowedDomainList() []string {
+	return normalizeDomainList(t.AllowedDomains)
+}
+
+func (t Tenant) PrimaryAllowedDomain() string {
+	domains := t.AllowedDomainList()
+	if len(domains) == 0 {
+		return ""
+	}
+	return domains[0]
 }
 
 func (t Tenant) RedirectURIList() []string {
@@ -97,12 +109,12 @@ func (t Tenant) RedirectURISet() map[string]bool {
 }
 
 type TenantInput struct {
-	ID            string
-	IssuerURL     string
-	AllowedDomain string
-	ClientID      string
-	ClientSecret  string
-	RedirectURIs  string
+	ID             string
+	IssuerURL      string
+	AllowedDomains string
+	ClientID       string
+	ClientSecret   string
+	RedirectURIs   string
 }
 
 type GeneratedKey struct {
@@ -395,7 +407,7 @@ func (s *Store) SaveTenant(input TenantInput) (Tenant, error) {
 			input.ID,
 			input.IssuerURL,
 			host,
-			input.AllowedDomain,
+			input.AllowedDomains,
 			input.ClientID,
 			input.ClientSecret,
 			input.RedirectURIs,
@@ -414,7 +426,7 @@ func (s *Store) SaveTenant(input TenantInput) (Tenant, error) {
 			WHERE id = ?`,
 		input.IssuerURL,
 		host,
-		input.AllowedDomain,
+		input.AllowedDomains,
 		input.ClientID,
 		input.ClientSecret,
 		input.RedirectURIs,
@@ -646,13 +658,13 @@ func (s *Store) RevokeKey(tenantID string, id string) error {
 	return err
 }
 
-func (s *Store) UseInviteKey(tenantID string, email string, key string, allowedDomain string) (User, error) {
+func (s *Store) UseInviteKey(tenantID string, email string, key string, allowedDomains string) (User, error) {
 	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "" {
 		return User{}, ErrInvalidInviteKey
 	}
 	email = normalizeEmail(email)
-	if !emailInDomain(email, allowedDomain) {
+	if !emailInDomains(email, allowedDomains) {
 		return User{}, ErrInvalidEmailDomain
 	}
 	if _, err := mail.ParseAddress(email); err != nil {
@@ -973,7 +985,7 @@ func scanTenant(row scanner) (Tenant, error) {
 		&tenant.ID,
 		&tenant.IssuerURL,
 		&tenant.Host,
-		&tenant.AllowedDomain,
+		&tenant.AllowedDomains,
 		&tenant.ClientID,
 		&tenant.ClientSecret,
 		&tenant.RedirectURIs,
@@ -1050,7 +1062,7 @@ func nullableTimeFromDB(ns sql.NullInt64) *time.Time {
 func normalizeTenantInput(input TenantInput) (TenantInput, string, error) {
 	input.ID = strings.TrimSpace(input.ID)
 	input.IssuerURL = strings.TrimRight(strings.TrimSpace(input.IssuerURL), "/")
-	input.AllowedDomain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(input.AllowedDomain)), "@")
+	input.AllowedDomains = strings.Join(normalizeDomainList(input.AllowedDomains), "\n")
 	input.ClientID = strings.TrimSpace(input.ClientID)
 	input.ClientSecret = strings.TrimSpace(input.ClientSecret)
 	if input.ClientSecret == "" {
@@ -1075,8 +1087,8 @@ func normalizeTenantInput(input TenantInput) (TenantInput, string, error) {
 	if host == "" {
 		return TenantInput{}, "", fmt.Errorf("issuer URL host is required")
 	}
-	if input.AllowedDomain == "" {
-		return TenantInput{}, "", fmt.Errorf("allowed domain is required")
+	if input.AllowedDomains == "" {
+		return TenantInput{}, "", fmt.Errorf("at least one allowed domain is required")
 	}
 	if input.ClientID == "" {
 		return TenantInput{}, "", fmt.Errorf("client ID is required")
@@ -1087,6 +1099,23 @@ func normalizeTenantInput(input TenantInput) (TenantInput, string, error) {
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func normalizeDomainList(raw string) []string {
+	seen := map[string]bool{}
+	var domains []string
+	for _, item := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';' || r == ' ' || r == '\t'
+	}) {
+		domain := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(item)), "@")
+		domain = strings.TrimSuffix(domain, ".")
+		if domain == "" || seen[domain] {
+			continue
+		}
+		seen[domain] = true
+		domains = append(domains, domain)
+	}
+	return domains
 }
 
 func normalizeHost(host string) string {
@@ -1103,8 +1132,17 @@ func normalizeHost(host string) string {
 }
 
 func emailInDomain(email string, domain string) bool {
-	domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), "@")
-	return strings.HasSuffix(normalizeEmail(email), "@"+domain)
+	return emailInDomains(email, domain)
+}
+
+func emailInDomains(email string, domains string) bool {
+	email = normalizeEmail(email)
+	for _, domain := range normalizeDomainList(domains) {
+		if strings.HasSuffix(email, "@"+domain) {
+			return true
+		}
+	}
+	return false
 }
 
 func hashToken(token string) string {

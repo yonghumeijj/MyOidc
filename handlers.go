@@ -30,9 +30,9 @@ type AdminPageData struct {
 }
 
 type LoginPageData struct {
-	Auth          AuthRequest
-	AllowedDomain string
-	Error         string
+	Auth           AuthRequest
+	AllowedDomains string
+	Error          string
 }
 
 func (a *App) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -87,8 +87,8 @@ func (a *App) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 	boundEmails := parseLines(r.FormValue("bound_emails"))
 	for i, email := range boundEmails {
 		email = normalizeEmail(email)
-		if !emailInDomain(email, tenant.AllowedDomain) {
-			a.renderAdmin(w, r, nil, fmt.Sprintf("bound email must end with @%s: %s", tenant.AllowedDomain, email))
+		if !emailInDomains(email, tenant.AllowedDomains) {
+			a.renderAdmin(w, r, nil, fmt.Sprintf("bound email must match one of %s: %s", allowedDomainsLabel(tenant), email))
 			return
 		}
 		boundEmails[i] = email
@@ -136,12 +136,12 @@ func (a *App) handleAdminTenants(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tenant, err := a.store.SaveTenant(TenantInput{
-		ID:            r.FormValue("tenant_id"),
-		IssuerURL:     r.FormValue("issuer_url"),
-		AllowedDomain: r.FormValue("allowed_domain"),
-		ClientID:      r.FormValue("client_id"),
-		ClientSecret:  r.FormValue("client_secret"),
-		RedirectURIs:  r.FormValue("redirect_uris"),
+		ID:             r.FormValue("tenant_id"),
+		IssuerURL:      r.FormValue("issuer_url"),
+		AllowedDomains: formValueFirst(r, "allowed_domains", "allowed_domain"),
+		ClientID:       r.FormValue("client_id"),
+		ClientSecret:   r.FormValue("client_secret"),
+		RedirectURIs:   r.FormValue("redirect_uris"),
 	})
 	if err != nil {
 		a.renderAdmin(w, r, nil, err.Error())
@@ -202,11 +202,11 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := a.store.UseInviteKey(tenant.ID, email, key, tenant.AllowedDomain)
+	user, err := a.store.UseInviteKey(tenant.ID, email, key, tenant.AllowedDomains)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidEmailDomain):
-			a.renderLogin(w, tenant, auth, fmt.Sprintf("email must end with @%s", tenant.AllowedDomain))
+			a.renderLogin(w, tenant, auth, fmt.Sprintf("email must match one of: %s", allowedDomainsLabel(tenant)))
 		default:
 			a.renderLogin(w, tenant, auth, "key is invalid, used, expired, revoked, or bound to another email")
 		}
@@ -504,12 +504,29 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, generated []Ge
 func (a *App) renderLogin(w http.ResponseWriter, tenant Tenant, auth AuthRequest, errText string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := pages.ExecuteTemplate(w, "login", LoginPageData{
-		Auth:          auth,
-		AllowedDomain: tenant.AllowedDomain,
-		Error:         errText,
+		Auth:           auth,
+		AllowedDomains: allowedDomainsLabel(tenant),
+		Error:          errText,
 	}); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+func allowedDomainsLabel(tenant Tenant) string {
+	var labels []string
+	for _, domain := range tenant.AllowedDomainList() {
+		labels = append(labels, "@"+domain)
+	}
+	return strings.Join(labels, ", ")
+}
+
+func formValueFirst(r *http.Request, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(r.FormValue(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func parseLines(raw string) []string {
