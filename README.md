@@ -68,15 +68,23 @@ docker run -d \
   --restart unless-stopped \
   -p 8080:8080 \
   -v gooidc-data:/data \
-  -e ISSUER_URL=https://sso.abc.com \
-  -e ALLOWED_DOMAINS='abc.com,xyz.com,aaa.com' \
-  -e OIDC_CLIENT_ID=openai \
-  -e OIDC_REDIRECT_URIS=https://OPENAI_CALLBACK_URL_FROM_SSO_PAGE \
-  -e ADMIN_USER=admin \
-  -e ADMIN_PASSWORD='change-this-admin-password' \
-  -e OIDC_CLIENT_SECRET='change-this-oidc-client-secret' \
   gooidc:latest
 ```
+
+For a published image:
+
+```bash
+docker run -d \
+  --name gooidc \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v gooidc-data:/data \
+  ghcr.io/yonghumeijj/myoidc:latest
+```
+
+On first run, open `/admin` and configure the issuer URL, allowed email domains, Client ID,
+Client Secret, and redirect URIs in the web UI. If no `ADMIN_PASSWORD` is provided, the
+generated password is stored in `/data/admin_password.txt` inside the Docker volume.
 
 `ISSUER_URL` must be the public HTTPS URL that OpenAI can reach. It is only the OIDC
 service address; the email domains users can sign in with are configured separately.
@@ -96,22 +104,13 @@ Server update example:
 
 ```bash
 docker pull ghcr.io/yonghumeijj/myoidc:latest
-
 docker stop gooidc
 docker rm gooidc
-
 docker run -d \
   --name gooidc \
   --restart unless-stopped \
   -p 8080:8080 \
   -v gooidc-data:/data \
-  -e ISSUER_URL=https://sso.abc.com \
-  -e ALLOWED_DOMAINS='abc.com,xyz.com,aaa.com' \
-  -e OIDC_CLIENT_ID=openai \
-  -e OIDC_REDIRECT_URIS=https://OPENAI_CALLBACK_URL_FROM_SSO_PAGE \
-  -e ADMIN_USER=admin \
-  -e ADMIN_PASSWORD='change-this-admin-password' \
-  -e OIDC_CLIENT_SECRET='change-this-oidc-client-secret' \
   ghcr.io/yonghumeijj/myoidc:latest
 ```
 
